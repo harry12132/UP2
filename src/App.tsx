@@ -151,8 +151,7 @@ export default function App() {
 
   useEffect(() => onAuthStateChanged(auth, async current => {
     setUser(current);
-    if (current) { try { await ensureProfile(current); } catch (error) { console.error('Profile setup failed', error); } }
-    else { setProfile(null); }
+    if (!current) { setProfile(null); }
   }), []);
 
   useEffect(() => {
@@ -179,7 +178,7 @@ export default function App() {
       snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
     }, err => console.error('Your posts:', err)));
     following.slice(0, 20).forEach(uid => {
-      unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', uid), orderBy('createdAt', 'desc'), limit(20)), snap => {
+      unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', uid), where('visibility', 'in', ['public', 'followers']), orderBy('createdAt', 'desc'), limit(20)), snap => {
         snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
       }, err => console.error('Friend posts:', err)));
     });
