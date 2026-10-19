@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { auth, db, googleProvider } from './firebase';
 
-type Profile = { uid: string; displayName: string; email: string; photoURL?: string; bio?: string };
+type Profile = { uid: string; displayName: string; photoURL?: string; bio?: string };
 type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; createdAt?: { toDate?: () => Date } };
 type EventItem = { id: string; hostId: string; hostName: string; title: string; description?: string; location?: string; startsAt: string; visibility: 'public' | 'selected'; invitedUids: string[]; attendeeUids: string[]; createdAt?: { toDate?: () => Date } };
 type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
@@ -108,7 +108,7 @@ async function ensureProfile(user: User) {
   if (!existing.exists()) {
     await setDoc(ref, {
       displayName: user.displayName || user.email?.split('@')[0] || 'New friend',
-      email: user.email || '', photoURL: user.photoURL || '', bio: '',
+      photoURL: user.photoURL || '', bio: '',
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
     });
   }
@@ -171,9 +171,6 @@ export default function App() {
     const unsubs: (() => void)[] = [];
     const allPosts = new Map<string, Post>();
     const publish = () => setPosts([...allPosts.values()].sort((a, b) => (b.createdAt?.toDate?.().getTime() || 0) - (a.createdAt?.toDate?.().getTime() || 0)));
-    unsubs.push(onSnapshot(query(collection(db, 'posts'), where('visibility', '==', 'public'), orderBy('createdAt', 'desc'), limit(50)), snap => {
-      snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
-    }, err => console.error('Public feed:', err)));
     unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
       snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
     }, err => console.error('Your posts:', err)));
@@ -213,7 +210,7 @@ export default function App() {
 
   const invitedEvents = useMemo(() => events.filter(e => e.hostId !== user?.uid && e.invitedUids?.includes(user?.uid || '') && !e.attendeeUids?.includes(user?.uid || '')), [events, user]);
   const unread = notices.filter(n => !n.read).length;
-  const filteredPeople = people.filter(p => (p.displayName + ' ' + p.email).toLowerCase().includes(peopleSearch.toLowerCase()));
+  const filteredPeople = people.filter(p => p.displayName.toLowerCase().includes(peopleSearch.toLowerCase()));
   const followedProfiles = people.filter(p => following.includes(p.uid));
 
   async function publishPost(e: FormEvent) {
