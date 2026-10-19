@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
   addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot,
   orderBy, query, serverTimestamp, setDoc, updateDoc, where,
@@ -358,7 +358,7 @@ function mergeEvents(current: EventItem[], incoming: EventItem[]) {
   incoming.forEach(e => map.set(e.id, e));
   return [...map.values()];
 }
-function NavButton({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) {
+function NavButton({ active, icon, label, count, onClick }: { active: boolean; icon: ReactNode; label: string; count?: number; onClick: () => void }) {
   return <button className={'nav-button ' + (active ? 'nav-active' : '')} onClick={onClick}>{icon}<span>{label}</span>{!!count && count > 0 && <b>{count > 9 ? '9+' : count}</b>}</button>;
 }
 function EmptyState({ icon, title, body, action, onClick }: { icon: React.ReactNode; title: string; body: string; action?: string; onClick?: () => void }) {
