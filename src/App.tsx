@@ -151,7 +151,19 @@ export default function App() {
 
   useEffect(() => onAuthStateChanged(auth, async current => {
     setUser(current);
-    if (!current) { setProfile(null); }
+
+    if (!current) {
+      setProfile(null);
+      return;
+    }
+
+    try {
+      // Repair missing profile documents for users who signed in before profile creation completed.
+      await ensureProfile(current);
+    } catch (err) {
+      console.error('Profile setup failed:', err);
+      setToast('Could not set up your profile: ' + authError(err));
+    }
   }), []);
 
   useEffect(() => {
@@ -214,7 +226,18 @@ export default function App() {
   const followedProfiles = people.filter(p => following.includes(p.uid));
 
   async function publishPost(e: FormEvent) {
-    e.preventDefault(); if (!user || !profile || !postText.trim()) return;
+    e.preventDefault();
+
+    if (!user) {
+      setToast('Please log in first.');
+      return;
+    }
+    if (!profile) {
+      setToast('Your profile is still loading. Please wait a moment and try again.');
+      return;
+    }
+    if (!postText.trim()) return;
+
     setSaving(true);
     try {
       await addDoc(collection(db, 'posts'), {
@@ -236,7 +259,18 @@ export default function App() {
   }
 
   async function createEvent(e: FormEvent) {
-    e.preventDefault(); if (!user || !profile || !eventTitle.trim() || !eventDate) return;
+    e.preventDefault();
+
+    if (!user) {
+      setToast('Please log in first.');
+      return;
+    }
+    if (!profile) {
+      setToast('Your profile is still loading. Please wait a moment and try again.');
+      return;
+    }
+    if (!eventTitle.trim() || !eventDate) return;
+
     setSaving(true);
     try {
       const inviteIds = eventVisibility === 'public' ? [] : invitees;
