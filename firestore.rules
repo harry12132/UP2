@@ -10,7 +10,7 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn();
       allow create: if isSelf(uid)
-        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'bio', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['displayName', 'photoURL', 'bio', 'createdAt', 'updatedAt'])
         && request.resource.data.displayName is string;
       allow update: if isSelf(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'bio', 'updatedAt']);
