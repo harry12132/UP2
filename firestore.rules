@@ -58,9 +58,11 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['hostId', 'hostName', 'title', 'description', 'location', 'startsAt', 'visibility', 'invitedUids', 'attendeeUids', 'createdAt', 'updatedAt']);
       allow update: if signedIn() && (
         (resource.data.hostId == request.auth.uid && request.resource.data.hostId == request.auth.uid) ||
-        (request.auth.uid in resource.data.invitedUids &&
+        ((request.auth.uid in resource.data.invitedUids || resource.data.visibility == 'public') &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendeeUids', 'updatedAt']) &&
-          request.auth.uid in request.resource.data.attendeeUids)
+          request.resource.data.attendeeUids is list &&
+          request.resource.data.attendeeUids.toSet().difference(resource.data.attendeeUids.toSet()).hasOnly([request.auth.uid]) &&
+          resource.data.attendeeUids.toSet().difference(request.resource.data.attendeeUids.toSet()).hasOnly([request.auth.uid]))
       );
       allow delete: if signedIn() && resource.data.hostId == request.auth.uid;
     }
