@@ -25,7 +25,7 @@ Install the Firebase CLI, sign in to the account that owns `up2-nz`, then run:
 
 ```sh
 firebase use up2-nz
-firebase deploy --only firestore:rules
+firebase deploy --only firestore
 ```
 
 Before using UP2 with real people, review the rules and test them in the Firebase Emulator Suite. The app currently provides in-app event notifications; browser push notifications and email invitations are not implemented yet.
