@@ -39,7 +39,10 @@ service cloud.firestore {
         && request.resource.data.text.size() <= 2000
         && request.resource.data.visibility in ['public', 'followers', 'selected']
         && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'authorPhoto', 'text', 'visibility', 'audienceUids', 'createdAt']);
-      allow update, delete: if signedIn() && resource.data.authorId == request.auth.uid;
+      allow update: if signedIn() && resource.data.authorId == request.auth.uid
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'visibility', 'audienceUids']);
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
     }
 
     match /events/{eventId} {
