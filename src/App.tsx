@@ -1,0 +1,379 @@
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import {
+  addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot,
+  orderBy, query, serverTimestamp, setDoc, updateDoc, where,
+} from 'firebase/firestore';
+import {
+  createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword,
+  signInWithPopup, signOut, updateProfile, type User,
+} from 'firebase/auth';
+import {
+  ArrowUpRight, Bell, CalendarDays, Check, ChevronDown, Clock3, Compass,
+  Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
+} from 'lucide-react';
+import { auth, db, googleProvider } from './firebase';
+
+type Profile = { uid: string; displayName: string; email: string; photoURL?: string; bio?: string };
+type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; createdAt?: { toDate?: () => Date } };
+type EventItem = { id: string; hostId: string; hostName: string; title: string; description?: string; location?: string; startsAt: string; visibility: 'public' | 'selected'; invitedUids: string[]; attendeeUids: string[]; createdAt?: { toDate?: () => Date } };
+type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
+type Tab = 'home' | 'events' | 'people' | 'invites';
+
+const timeAgo = (value?: { toDate?: () => Date }) => {
+  const date = value?.toDate?.();
+  if (!date) return 'just now';
+  const mins = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  if (mins < 1440) return Math.floor(mins / 60) + 'h ago';
+  return Math.floor(mins / 1440) + 'd ago';
+};
+const initials = (name = 'U') => name.trim().split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase();
+const niceDate = (value: string) => {
+  if (!value) return 'Date to be confirmed';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('en-NZ', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(date);
+};
+
+function Avatar({ name, photo, size = 'normal' }: { name: string; photo?: string; size?: 'normal' | 'small' | 'large' }) {
+  return <span className={'avatar avatar-' + size}>{photo ? <img src={photo} alt="" /> : initials(name)}</span>;
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState<'login' | 'signup'>('signup');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault(); setError(''); setBusy(true);
+    try {
+      let user: User;
+      if (mode === 'signup') {
+        const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        user = result.user;
+        await updateProfile(user, { displayName: name.trim() || email.split('@')[0] });
+      } else {
+        user = (await signInWithEmailAndPassword(auth, email.trim(), password)).user;
+      }
+      await ensureProfile(user);
+    } catch (err) { setError(authError(err)); }
+    finally { setBusy(false); }
+  }
+  async function google() {
+    setError(''); setBusy(true);
+    try { const result = await signInWithPopup(auth, googleProvider); await ensureProfile(result.user); }
+    catch (err) { setError(authError(err)); }
+    finally { setBusy(false); }
+  }
+
+  return <main className="auth-page">
+    <div className="auth-side">
+      <div className="brand brand-light"><span className="brand-mark">u<span>2</span></span><span>UP2</span></div>
+      <div className="auth-hero">
+        <span className="eyebrow eyebrow-light"><span className="live-dot" /> A LITTLE MORE LIFE</span>
+        <h1>Less feed.<br /><em>More living.</em></h1>
+        <p>Your friends, your plans, your life. A social network built to bring people together, not keep them scrolling.</p>
+        <div className="hero-stamp"><Sparkles size={15} /> Made for real life in Aotearoa</div>
+      </div>
+      <div className="auth-bottom">THE INTERNET, BACK IN YOUR HANDS.</div>
+    </div>
+    <div className="auth-form-wrap">
+      <div className="mobile-brand brand"><span className="brand-mark">u<span>2</span></span><span>UP2</span></div>
+      <div className="auth-form">
+        <div className="form-kicker">{mode === 'signup' ? 'YOUR PEOPLE ARE HERE' : 'GOOD TO HAVE YOU BACK'}</div>
+        <h2>{mode === 'signup' ? 'Life’s happening.' : 'Welcome back.'}</h2>
+        <p className="muted">{mode === 'signup' ? 'Make an account and get in on it.' : 'Pick up where real life left off.'}</p>
+        <button className="google-button" onClick={google} disabled={busy}><span className="google-g">G</span> Continue with Google <ArrowUpRight size={16} /></button>
+        <div className="separator"><span />or use your email<span /></div>
+        <form onSubmit={submit} className="stack-form">
+          {mode === 'signup' && <label>Your name<input value={name} onChange={e => setName(e.target.value)} placeholder="What do your friends call you?" autoComplete="name" /></label>}
+          <label>Email address<input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
+          <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 6 characters" minLength={6} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} required /></label>
+          {error && <p className="error-text">{error}</p>}
+          <button className="button button-dark full-width" disabled={busy}>{busy ? 'One sec…' : mode === 'signup' ? 'Create your account' : 'Log in'} <ArrowUpRight size={16} /></button>
+        </form>
+        <p className="auth-switch">{mode === 'signup' ? 'Already one of us?' : 'New around here?'} <button onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); }}>{mode === 'signup' ? 'Log in' : 'Create an account'}</button></p>
+        <p className="legal-note">By joining, you agree to be kind, respect people’s privacy, and help make online life a little better.</p>
+      </div>
+    </div>
+  </main>;
+}
+
+async function ensureProfile(user: User) {
+  const ref = doc(db, 'users', user.uid);
+  const existing = await getDoc(ref);
+  if (!existing.exists()) {
+    await setDoc(ref, {
+      displayName: user.displayName || user.email?.split('@')[0] || 'New friend',
+      email: user.email || '', photoURL: user.photoURL || '', bio: '',
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+  }
+}
+function authError(error: unknown) {
+  const code = (error as { code?: string })?.code;
+  const messages: Record<string, string> = {
+    'auth/email-already-in-use': 'That email already has an account. Try logging in.',
+    'auth/invalid-credential': 'Email or password looks incorrect. Give it another go.',
+    'auth/weak-password': 'Choose a password with at least 6 characters.',
+    'auth/popup-closed-by-user': 'Google sign-in was closed before it finished.',
+    'auth/unauthorized-domain': 'This domain needs to be authorised in Firebase Authentication settings.',
+    'auth/operation-not-allowed': 'Enable this sign-in method in Firebase Authentication.',
+    'permission-denied': 'Firebase blocked that action. Check that the Firestore rules are deployed.',
+  };
+  return messages[code || ''] || (error instanceof Error ? error.message : 'Something went wrong. Please try again.');
+}
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [tab, setTab] = useState<Tab>('home');
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [people, setPeople] = useState<Profile[]>([]);
+  const [following, setFollowing] = useState<string[]>([]);
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const [postText, setPostText] = useState('');
+  const [postAudience, setPostAudience] = useState<'followers' | 'public'>('followers');
+  const [eventOpen, setEventOpen] = useState(false);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventDescription, setEventDescription] = useState('');
+  const [eventLocation, setEventLocation] = useState('');
+  const [eventDate, setEventDate] = useState('');
+  const [eventVisibility, setEventVisibility] = useState<'public' | 'selected'>('selected');
+  const [invitees, setInvitees] = useState<string[]>([]);
+  const [peopleSearch, setPeopleSearch] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState('');
+
+  useEffect(() => onAuthStateChanged(auth, async current => {
+    setUser(current);
+    if (current) { try { await ensureProfile(current); } catch (error) { console.error('Profile setup failed', error); } }
+    else { setProfile(null); }
+  }), []);
+
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(doc(db, 'users', user.uid), snap => {
+      if (snap.exists()) setProfile({ uid: user.uid, ...snap.data() } as Profile);
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(collection(db, 'users', user.uid, 'following'), snap => setFollowing(snap.docs.map(d => d.id)));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubs: (() => void)[] = [];
+    const allPosts = new Map<string, Post>();
+    const publish = () => setPosts([...allPosts.values()].sort((a, b) => (b.createdAt?.toDate?.().getTime() || 0) - (a.createdAt?.toDate?.().getTime() || 0)));
+    unsubs.push(onSnapshot(query(collection(db, 'posts'), where('visibility', '==', 'public'), orderBy('createdAt', 'desc'), limit(50)), snap => {
+      snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
+    }, err => console.error('Public feed:', err)));
+    unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
+      snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
+    }, err => console.error('Your posts:', err)));
+    following.slice(0, 20).forEach(uid => {
+      unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', uid), orderBy('createdAt', 'desc'), limit(20)), snap => {
+        snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
+      }, err => console.error('Friend posts:', err)));
+    });
+    return () => unsubs.forEach(fn => fn());
+  }, [user, following.join('|')]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubs = [
+      onSnapshot(query(collection(db, 'events'), where('visibility', '==', 'public'), orderBy('startsAt', 'asc'), limit(40)), snap => {
+        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+      }, err => console.error('Public events:', err)),
+      onSnapshot(query(collection(db, 'events'), where('invitedUids', 'array-contains', user.uid), limit(40)), snap => {
+        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+      }, err => console.error('Invited events:', err)),
+      onSnapshot(query(collection(db, 'events'), where('hostId', '==', user.uid), limit(40)), snap => {
+        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+      }, err => console.error('Hosted events:', err)),
+      onSnapshot(query(collection(db, 'notifications'), where('recipientId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
+        setNotices(snap.docs.map(d => ({ id: d.id, ...d.data() } as Notice)));
+      }, err => console.error('Notifications:', err)),
+    ];
+    return () => unsubs.forEach(fn => fn());
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    getDocs(query(collection(db, 'users'), limit(100))).then(snap => {
+      setPeople(snap.docs.filter(d => d.id !== user.uid).map(d => ({ uid: d.id, ...d.data() } as Profile)));
+    }).catch(err => console.error('People:', err));
+  }, [user]);
+
+  const invitedEvents = useMemo(() => events.filter(e => e.hostId !== user?.uid && e.invitedUids?.includes(user?.uid || '') && !e.attendeeUids?.includes(user?.uid || '')), [events, user]);
+  const unread = notices.filter(n => !n.read).length;
+  const filteredPeople = people.filter(p => (p.displayName + ' ' + p.email).toLowerCase().includes(peopleSearch.toLowerCase()));
+  const followedProfiles = people.filter(p => following.includes(p.uid));
+
+  async function publishPost(e: FormEvent) {
+    e.preventDefault(); if (!user || !profile || !postText.trim()) return;
+    setSaving(true);
+    try {
+      await addDoc(collection(db, 'posts'), {
+        authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '',
+        text: postText.trim(), visibility: postAudience, audienceUids: [], createdAt: serverTimestamp(),
+      });
+      setPostText(''); setToast('Out there. Go live your life.'); setTimeout(() => setToast(''), 2800);
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 4000); }
+    finally { setSaving(false); }
+  }
+
+  async function followPerson(person: Profile) {
+    if (!user) return;
+    const ref = doc(db, 'users', user.uid, 'following', person.uid);
+    try {
+      if (following.includes(person.uid)) await deleteDoc(ref);
+      else await setDoc(ref, { createdAt: serverTimestamp() });
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function createEvent(e: FormEvent) {
+    e.preventDefault(); if (!user || !profile || !eventTitle.trim() || !eventDate) return;
+    setSaving(true);
+    try {
+      const inviteIds = eventVisibility === 'public' ? [] : invitees;
+      const ref = await addDoc(collection(db, 'events'), {
+        hostId: user.uid, hostName: profile.displayName, title: eventTitle.trim(),
+        description: eventDescription.trim(), location: eventLocation.trim(), startsAt: new Date(eventDate).toISOString(),
+        visibility: eventVisibility, invitedUids: inviteIds, attendeeUids: [user.uid],
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      });
+      if (inviteIds.length) {
+        await Promise.all(inviteIds.map(recipientId => addDoc(collection(db, 'notifications'), {
+          recipientId, actorId: user.uid, actorName: profile.displayName, type: 'event_invite',
+          eventId: ref.id, eventTitle: eventTitle.trim(), read: false, createdAt: serverTimestamp(),
+        })));
+      }
+      setEventOpen(false); setEventTitle(''); setEventDescription(''); setEventLocation(''); setEventDate(''); setInvitees([]);
+      setToast(eventVisibility === 'public' ? 'Event is live. Let the plans begin.' : 'Invitations sent.'); setTimeout(() => setToast(''), 3000);
+      setTab('events');
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 4000); }
+    finally { setSaving(false); }
+  }
+
+  async function rsvp(event: EventItem, going: boolean) {
+    if (!user) return;
+    const next = new Set(event.attendeeUids || []);
+    if (going) next.add(user.uid); else next.delete(user.uid);
+    try { await updateDoc(doc(db, 'events', event.id), { attendeeUids: [...next], updatedAt: new Date().toISOString() }); }
+    catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function markRead(notice: Notice) {
+    try { await updateDoc(doc(db, 'notifications', notice.id), { read: true }); }
+    catch (err) { console.error(err); }
+  }
+
+  if (!user) return <AuthScreen />;
+
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark">u<span>2</span></span><span>UP2</span></button>
+      <div className="sidebar-caption">YOUR CORNER</div>
+      <nav className="main-nav">
+        <NavButton active={tab === 'home'} icon={<Sparkles size={18} />} label="Your feed" onClick={() => setTab('home')} />
+        <NavButton active={tab === 'events'} icon={<CalendarDays size={18} />} label="Events" onClick={() => setTab('events')} />
+        <NavButton active={tab === 'invites'} icon={<Bell size={18} />} label="Invitations" count={unread + invitedEvents.length} onClick={() => setTab('invites')} />
+        <NavButton active={tab === 'people'} icon={<Users size={18} />} label="Find your people" onClick={() => setTab('people')} />
+      </nav>
+      <div className="sidebar-bottom">
+        <div className="sidebar-note"><div className="note-icon"><Heart size={16} /></div><p>Made for real life.</p><span>No algorithm. No rush.</span></div>
+        <button className="profile-chip" onClick={() => signOut(auth)}><Avatar name={profile?.displayName || user.displayName || 'You'} photo={profile?.photoURL || user.photoURL || undefined} /><span className="profile-chip-text"><strong>{profile?.displayName || user.displayName || 'Your profile'}</strong><small>Log out</small></span><LogOut size={16} /></button>
+      </div>
+    </aside>
+
+    <main className="main-area">
+      <header className="topbar">
+        <div className="mobile-brand brand"><span className="brand-mark">u<span>2</span></span><span>UP2</span></div>
+        <div className="topbar-context"><span className="live-dot" /> AOTEAROA, ONLINE</div>
+        <div className="topbar-actions"><button className="icon-button" aria-label="Invitations" onClick={() => setTab('invites')}><Bell size={18} />{unread > 0 && <i />}</button><button className="button button-dark button-small" onClick={() => setEventOpen(true)}><Plus size={16} /> Make a plan</button></div>
+      </header>
+
+      <div className="content-wrap">
+        {tab === 'home' && <section className="page-section">
+          <div className="page-heading"><div><span className="eyebrow">YOUR CORNER OF THE WORLD</span><h1>What's <em>up?</em></h1><p>Catch up with your people. Then get out there.</p></div><div className="heading-scribble">less scroll<br />more soul <span>↗</span></div></div>
+          <form className="composer card" onSubmit={publishPost}>
+            <Avatar name={profile?.displayName || 'You'} photo={profile?.photoURL || undefined} size="large" />
+            <div className="composer-main"><textarea value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening in your world?" maxLength={2000} rows={2} /><div className="composer-bottom"><label className="audience-select"><Users size={14} /><select value={postAudience} onChange={e => setPostAudience(e.target.value as 'followers' | 'public')}><option value="followers">Your people</option><option value="public">Everyone in UP2</option></select><ChevronDown size={13} /></label><button className="button button-dark button-small" disabled={!postText.trim() || saving}>Share <ArrowUpRight size={15} /></button></div></div>
+          </form>
+          <div className="section-label"><span>THE LATEST</span><span className="section-line" /><span className="muted">{posts.length} posts</span></div>
+          {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · {post.visibility === 'public' ? 'Everyone' : 'Their people'}</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p><div className="post-footer"><span><Heart size={15} /> A little love goes a long way</span><button onClick={() => setToast('Comments are on the roadmap. For now, say hi in person.')}><MessageCircle size={15} /> Say something</button></div></article>)}</div>}
+          <div className="caught-up"><span className="caught-icon"><Check size={16} /></span><p><strong>That's you caught up.</strong><br /><span>Go make something happen.</span></p></div>
+        </section>}
+
+        {tab === 'events' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">GOOD THINGS HAPPEN OFFLINE</span><h1>Make <em>plans.</em></h1><p>Find a reason to get everyone in the same place.</p></div><button className="button button-dark" onClick={() => setEventOpen(true)}><Plus size={16} /> Create an event</button></div>
+          <div className="event-tabs"><span className="active">Coming up</span><span>Public events</span><span>Your plans</span></div>
+          {events.length === 0 ? <EmptyState icon={<CalendarDays size={21} />} title="Nothing on the calendar. Yet." body="Be the person who makes something happen. Invite your friends or put a public plan out there." action="Create an event" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{[...events].sort((a,b) => new Date(a.startsAt).getTime()-new Date(b.startsAt).getTime()).map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
+        </section>}
+
+        {tab === 'invites' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOU'RE ON THE LIST</span><h1>You're <em>invited.</em></h1><p>Good things start with someone thinking of you.</p></div></div>
+          <div className="section-label"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
+          {invitedEvents.length === 0 ? <EmptyState icon={<Bell size={21} />} title="No invitations just yet." body="When a friend invites you to something, you'll find it here. You could always be the one to start a plan." action="Make a plan" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{invitedEvents.map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
+          {notices.length > 0 && <><div className="section-label section-label-spaced"><span>NOTIFICATIONS</span><span className="section-line" /></div><div className="notice-list">{notices.map(notice => <button className={'notice-row ' + (!notice.read ? 'notice-unread' : '')} key={notice.id} onClick={() => { void markRead(notice); setTab('events'); }}><span className="notice-icon"><CalendarDays size={17} /></span><span><strong>{notice.actorName} invited you to {notice.eventTitle}</strong><small>{timeAgo(notice.createdAt)}</small></span>{!notice.read && <i />}</button>)}</div></>}
+        </section>}
+
+        {tab === 'people' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">GOOD PEOPLE, GOOD TIMES</span><h1>Find your <em>people.</em></h1><p>Follow the people you know. Their posts will find their way to you.</p></div></div>
+          <div className="people-search"><Search size={17} /><input value={peopleSearch} onChange={e => setPeopleSearch(e.target.value)} placeholder="Search by name or email" /></div>
+          {followedProfiles.length > 0 && <><div className="section-label"><span>YOUR PEOPLE</span><span className="section-line" /><span className="muted">{followedProfiles.length}</span></div><div className="people-grid">{followedProfiles.map(person => <PersonCard key={person.uid} person={person} following onFollow={() => followPerson(person)} />)}</div></>}
+          <div className="section-label section-label-spaced"><span>MEET THE COMMUNITY</span><span className="section-line" /></div>
+          {filteredPeople.length === 0 ? <EmptyState icon={<Users size={21} />} title="No one by that name yet." body="Try another search, or invite a friend to join UP2." /> : <div className="people-grid">{filteredPeople.map(person => <PersonCard key={person.uid} person={person} following={following.includes(person.uid)} onFollow={() => followPerson(person)} />)}</div>}
+        </section>}
+      </div>
+      <footer className="site-footer"><span>UP2 © 2026</span><span>YOUR PEOPLE. YOUR PLANS. YOUR LIFE.</span><button onClick={() => setToast('Privacy and community guidelines are being prepared for the beta launch.')}>Community & privacy</button></footer>
+    </main>
+
+    <nav className="mobile-nav">
+      <NavButton active={tab === 'home'} icon={<Sparkles size={19} />} label="Feed" onClick={() => setTab('home')} />
+      <NavButton active={tab === 'events'} icon={<CalendarDays size={19} />} label="Events" onClick={() => setTab('events')} />
+      <button className="mobile-create" onClick={() => setEventOpen(true)} aria-label="Create event"><Plus size={22} /></button>
+      <NavButton active={tab === 'invites'} icon={<Bell size={19} />} label="Invites" count={unread} onClick={() => setTab('invites')} />
+      <NavButton active={tab === 'people'} icon={<Users size={19} />} label="People" onClick={() => setTab('people')} />
+    </nav>
+
+    {eventOpen && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setEventOpen(false); }}><section className="event-modal"><div className="modal-head"><div><span className="eyebrow">GET EVERYONE TOGETHER</span><h2>Make a <em>plan.</em></h2></div><button className="icon-button" onClick={() => setEventOpen(false)} aria-label="Close"><X size={19} /></button></div>
+      <form className="stack-form event-form" onSubmit={createEvent}>
+        <label>What's happening?<input required maxLength={120} value={eventTitle} onChange={e => setEventTitle(e.target.value)} placeholder="Beach, dinner, gig, spontaneous adventure…" /></label>
+        <label>Tell people a little more <textarea rows={2} maxLength={1000} value={eventDescription} onChange={e => setEventDescription(e.target.value)} placeholder="The vibe, the details, anything they need to know." /></label>
+        <div className="form-two"><label>When?<input required type="datetime-local" value={eventDate} onChange={e => setEventDate(e.target.value)} min={new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)} /></label><label>Where?<input maxLength={200} value={eventLocation} onChange={e => setEventLocation(e.target.value)} placeholder="Share with invitees" /></label></div>
+        <div className="label-block">WHO'S INVITED?</div>
+        <div className="visibility-options"><button type="button" className={'visibility-option ' + (eventVisibility === 'selected' ? 'chosen' : '')} onClick={() => setEventVisibility('selected')}><Users size={17} /><span><strong>Selected friends</strong><small>Just the people you choose</small></span>{eventVisibility === 'selected' && <Check size={16} />}</button><button type="button" className={'visibility-option ' + (eventVisibility === 'public' ? 'chosen' : '')} onClick={() => setEventVisibility('public')}><Compass size={17} /><span><strong>Everyone</strong><small>Discoverable by the UP2 community</small></span>{eventVisibility === 'public' && <Check size={16} />}</button></div>
+        {eventVisibility === 'selected' && <div className="invite-picker">{followedProfiles.length === 0 ? <p className="muted small-copy">Follow some friends first, and they'll show up here.</p> : followedProfiles.map(person => <label className="invite-person" key={person.uid}><span><Avatar name={person.displayName} photo={person.photoURL} size="small" />{person.displayName}</span><input type="checkbox" checked={invitees.includes(person.uid)} onChange={e => setInvitees(prev => e.target.checked ? [...prev, person.uid] : prev.filter(id => id !== person.uid))} /></label>)}</div>}
+        <button className="button button-dark full-width create-event-button" disabled={saving || !eventTitle.trim() || !eventDate}>{saving ? 'Getting things ready…' : eventVisibility === 'public' ? 'Publish event' : 'Send ' + (invitees.length ? invitees.length + ' invitation' + (invitees.length === 1 ? '' : 's') : 'invitations')} <ArrowUpRight size={16} /></button>
+      </form>
+    </section></div>}
+    {toast && <div className="toast"><Check size={16} />{toast}</div>}
+  </div>;
+}
+
+function mergeEvents(current: EventItem[], incoming: EventItem[]) {
+  const map = new Map(current.map(e => [e.id, e]));
+  incoming.forEach(e => map.set(e.id, e));
+  return [...map.values()];
+}
+function NavButton({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) {
+  return <button className={'nav-button ' + (active ? 'nav-active' : '')} onClick={onClick}>{icon}<span>{label}</span>{!!count && count > 0 && <b>{count > 9 ? '9+' : count}</b>}</button>;
+}
+function EmptyState({ icon, title, body, action, onClick }: { icon: React.ReactNode; title: string; body: string; action?: string; onClick?: () => void }) {
+  return <div className="empty-state"><span className="empty-icon">{icon}</span><h3>{title}</h3><p>{body}</p>{action && <button className="button button-outline" onClick={onClick}>{action} <ArrowUpRight size={15} /></button>}</div>;
+}
+function PersonCard({ person, following, onFollow }: { person: Profile; following: boolean; onFollow: () => void }) {
+  return <article className="person-card card"><Avatar name={person.displayName} photo={person.photoURL} size="large" /><div className="person-info"><strong>{person.displayName}</strong><span>{person.bio || 'Here for the real-life stuff.'}</span></div><button className={'follow-button ' + (following ? 'following' : '')} onClick={onFollow}>{following ? <><Check size={14} /> Following</> : <><Plus size={14} /> Follow</>}</button></article>;
+}
+function EventCard({ event, uid, onRsvp }: { event: EventItem; uid: string; onRsvp: (event: EventItem, going: boolean) => void }) {
+  const going = (event.attendeeUids || []).includes(uid);
+  const invited = (event.invitedUids || []).includes(uid);
+  const isHost = event.hostId === uid;
+  return <article className="event-card card"><div className="event-card-top"><span className={'event-pill ' + (event.visibility === 'public' ? 'pill-public' : '')}>{event.visibility === 'public' ? <><Compass size={12} /> OPEN TO EVERYONE</> : <><Users size={12} /> INVITATION</>}</span><span className="event-date-icon"><CalendarDays size={18} /></span></div><h3>{event.title}</h3>{event.description && <p className="event-description">{event.description}</p>}<div className="event-meta"><span><Clock3 size={14} />{niceDate(event.startsAt)}</span>{event.location && <span><MapPin size={14} />{event.location}</span>}</div><div className="event-card-footer"><div className="attendee-count"><span className="attendee-avatars"><Avatar name={event.hostName} size="small" /></span><span><strong>{event.attendeeUids?.length || 0}</strong> going · by {isHost ? 'you' : event.hostName}</span></div>{isHost ? <span className="host-tag">YOUR EVENT</span> : <button className={'rsvp-button ' + (going ? 'going' : '')} onClick={() => onRsvp(event, !going)}>{going ? <><Check size={14} /> Going</> : invited ? "I'm in" : 'Count me in'}</button>}</div></article>;
+}
