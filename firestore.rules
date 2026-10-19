@@ -67,9 +67,14 @@ service cloud.firestore {
 
     match /notifications/{notificationId} {
       allow read: if signedIn() && resource.data.recipientId == request.auth.uid;
-      allow create: if signedIn() && resource.data.actorId == request.auth.uid
-        && resource.data.recipientId is string && resource.data.recipientId != request.auth.uid
-        && resource.data.type in ['event_invite'];
+      allow create: if signedIn() && request.resource.data.actorId == request.auth.uid
+        && request.resource.data.recipientId is string && request.resource.data.recipientId != request.auth.uid
+        && request.resource.data.type == 'event_invite'
+        && request.resource.data.eventId is string
+        && exists(/databases/$(database)/documents/events/$(request.resource.data.eventId))
+        && get(/databases/$(database)/documents/events/$(request.resource.data.eventId)).data.hostId == request.auth.uid
+        && get(/databases/$(database)/documents/events/$(request.resource.data.eventId)).data.visibility == 'selected'
+        && request.resource.data.recipientId in get(/databases/$(database)/documents/events/$(request.resource.data.eventId)).data.invitedUids;
       allow update: if signedIn() && resource.data.recipientId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       allow delete: if signedIn() && resource.data.recipientId == request.auth.uid;
