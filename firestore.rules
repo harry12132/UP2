@@ -63,8 +63,8 @@ service cloud.firestore {
 
     // A follow request becomes the canonical follow relationship only when accepted.
     match /followRequests/{requestId} {
-      allow get, list: if signedIn() &&
-        (resource.data.requesterId == request.auth.uid || resource.data.targetId == request.auth.uid || acceptedFollower(resource.data.targetId));
+      allow get: if signedIn() && (resource.data.requesterId == request.auth.uid || resource.data.targetId == request.auth.uid || requestId.matches('.*__' + request.auth.uid));
+      allow list: if signedIn() && (resource.data.requesterId == request.auth.uid || resource.data.targetId == request.auth.uid || acceptedFollower(resource.data.targetId) || acceptedFollower(resource.data.requesterId));
       allow create: if signedIn()
         && request.resource.data.requesterId == request.auth.uid
         && request.resource.data.targetId is string
@@ -72,13 +72,18 @@ service cloud.firestore {
         && requestId == request.resource.data.targetId + '__' + request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.keys().hasOnly(['requesterId','requesterName','requesterPhoto','targetId','status','createdAt','updatedAt']);
-      allow update: if signedIn() &&
-        resource.data.targetId == request.auth.uid &&
-        resource.data.status == 'pending' &&
-        request.resource.data.requesterId == resource.data.requesterId &&
-        request.resource.data.targetId == resource.data.targetId &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt']) &&
-        request.resource.data.status in ['accepted','declined'];
+      allow update: if signedIn() && (
+        (resource.data.targetId == request.auth.uid && resource.data.status == 'pending' &&
+          request.resource.data.requesterId == resource.data.requesterId &&
+          request.resource.data.targetId == resource.data.targetId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt']) &&
+          request.resource.data.status in ['accepted','declined']) ||
+        (resource.data.requesterId == request.auth.uid && resource.data.status == 'declined' &&
+          request.resource.data.requesterId == resource.data.requesterId &&
+          request.resource.data.targetId == resource.data.targetId &&
+          request.resource.data.status == 'pending' &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','createdAt','updatedAt','requesterName','requesterPhoto']))
+      );
       allow delete: if signedIn() &&
         (resource.data.requesterId == request.auth.uid ||
           (resource.data.targetId == request.auth.uid && resource.data.status == 'pending'));
