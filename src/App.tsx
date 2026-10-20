@@ -228,8 +228,16 @@ export default function App() {
 
   useEffect(() => {
     const postId = new URLSearchParams(window.location.search).get('post');
-    if (!postId || !posts.some(post => post.id === postId)) return;
-    document.getElementById(`post-${postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!postId) return;
+    const loadedPost = posts.some(post => post.id === postId);
+    if (loadedPost) {
+      document.getElementById(`post-${postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    // Shared links can open a post directly, even if its author is not followed.
+    getDoc(doc(db, 'posts', postId)).then(snap => {
+      if (snap.exists()) setPosts(prev => prev.some(post => post.id === snap.id) ? prev : [{ id: snap.id, ...snap.data() } as Post, ...prev]);
+    }).catch(err => console.error('Shared post:', err));
   }, [posts]);
 
   useEffect(() => {
