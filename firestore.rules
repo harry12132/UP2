@@ -6,6 +6,15 @@ service cloud.firestore {
     function follows(uid) {
       return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)/following/$(uid));
     }
+    function canReadPost(postId) {
+      let postPath = /databases/$(database)/documents/posts/$(postId);
+      return signedIn() && exists(postPath) && (
+        get(postPath).data.authorId == request.auth.uid ||
+        get(postPath).data.visibility == 'public' ||
+        (get(postPath).data.visibility == 'followers' && follows(get(postPath).data.authorId)) ||
+        (get(postPath).data.visibility == 'selected' && request.auth.uid in get(postPath).data.audienceUids)
+      );
+    }
 
     match /users/{uid} {
       allow read: if signedIn();
@@ -38,11 +47,33 @@ service cloud.firestore {
         && request.resource.data.text.size() > 0
         && request.resource.data.text.size() <= 2000
         && request.resource.data.visibility in ['public', 'followers', 'selected']
-        && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'authorPhoto', 'text', 'visibility', 'audienceUids', 'createdAt']);
+        && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'authorPhoto', 'text', 'visibility', 'audienceUids', 'mediaUrl', 'mediaType', 'createdAt'])
+        && (!('mediaUrl' in request.resource.data) || request.resource.data.mediaUrl is string)
+        && (!('mediaType' in request.resource.data) || request.resource.data.mediaType in ['image', 'video']);
       allow update: if signedIn() && resource.data.authorId == request.auth.uid
         && request.resource.data.authorId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'visibility', 'audienceUids']);
       allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+      match /likes/{uid} {
+        allow read: if canReadPost(postId);
+        allow create: if canReadPost(postId) && isSelf(uid) && request.resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'displayName', 'createdAt']);
+        allow delete: if canReadPost(postId) && isSelf(uid);
+        allow update: if false;
+      }
+
+      match /comments/{commentId} {
+        allow read: if canReadPost(postId);
+        allow create: if canReadPost(postId)
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 500
+          && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'authorPhoto', 'text', 'createdAt']);
+        allow delete: if canReadPost(postId) && signedIn() && resource.data.authorId == request.auth.uid;
+        allow update: if false;
+      }
     }
 
     match /events/{eventId} {
