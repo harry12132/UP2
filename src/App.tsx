@@ -128,7 +128,11 @@ function authError(error: unknown) {
     'auth/popup-closed-by-user': 'Google sign-in was closed before it finished.',
     'auth/unauthorized-domain': 'This domain needs to be authorised in Firebase Authentication settings.',
     'auth/operation-not-allowed': 'Enable this sign-in method in Firebase Authentication.',
-    'permission-denied': 'Firebase blocked that action. Check that the Firestore rules are deployed.',
+    'permission-denied': 'Firestore rejected this action (permission-denied). The updated Firestore rules may not be deployed yet. In the browser console, check the full error and run: firebase deploy --only firestore:rules',
+    'firestore/permission-denied': 'Firestore rejected this action (permission-denied). The updated Firestore rules may not be deployed yet. In the browser console, check the full error and run: firebase deploy --only firestore:rules',
+    'storage/unauthorized': 'Storage rejected the upload. Check the storage provider credentials and access policies.',
+    'unavailable': 'Firebase is temporarily unavailable. Check your connection and try again.',
+    'failed-precondition': 'Firebase needs a database index or configuration change. Check the browser console for the full error.',
   };
   return messages[code || ''] || (error instanceof Error ? error.message : 'Something went wrong. Please try again.');
 }
@@ -340,7 +344,7 @@ export default function App() {
     try {
       if (postLikes[post.id]?.liked) await deleteDoc(likeRef);
       else await setDoc(likeRef, { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Someone', createdAt: serverTimestamp() });
-    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+    } catch (err) { console.error('Toggle post like failed:', err); setToast(authError(err)); setTimeout(() => setToast(''), 5000); }
   }
 
   async function addComment(post: Post, e: FormEvent) {
@@ -353,7 +357,7 @@ export default function App() {
         authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '', text, createdAt: serverTimestamp(),
       });
       setCommentDrafts(prev => ({ ...prev, [post.id]: '' }));
-    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+    } catch (err) { console.error('Add post comment failed:', err); setToast(authError(err)); setTimeout(() => setToast(''), 5000); }
   }
 
   async function deleteComment(post: Post, comment: CommentItem) {
