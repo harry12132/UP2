@@ -12,8 +12,8 @@ import {
   Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
   ImagePlus, Share2, Send, Trash2,
 } from 'lucide-react';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
-import { auth, db, googleProvider, storage } from './firebase';
+import { auth, db, googleProvider } from './firebase';
+import { supabase } from './supabase';
 
 type Profile = { uid: string; displayName: string; photoURL?: string; bio?: string };
 type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; mediaUrl?: string; mediaType?: string; createdAt?: { toDate?: () => Date } };
@@ -323,9 +323,10 @@ export default function App() {
       let mediaType = '';
       if (mediaFile) {
         const safeName = mediaFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const fileRef = storageRef(storage, `posts/${user.uid}/${Date.now()}_${safeName}`);
-        const uploaded = await uploadBytes(fileRef, mediaFile, { contentType: mediaFile.type });
-        mediaUrl = await getDownloadURL(uploaded.ref);
+        const path = `posts/${user.uid}/${Date.now()}_${safeName}`;
+        const { error: uploadError } = await supabase.storage.from('up2-media').upload(path, mediaFile, { contentType: mediaFile.type, upsert: false });
+        if (uploadError) throw uploadError;
+        mediaUrl = supabase.storage.from('up2-media').getPublicUrl(path).data.publicUrl;
         mediaType = mediaFile.type.startsWith('video/') ? 'video' : 'image';
       }
       await addDoc(collection(db, 'posts'), {
@@ -393,9 +394,10 @@ export default function App() {
     setUploadingAlbumFor(event.id);
     try{
       const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-      const fileRef=storageRef(storage,`events/${event.id}/${user.uid}/${Date.now()}_${safeName}`);
-      const uploaded=await uploadBytes(fileRef,file,{contentType:file.type});
-      const url=await getDownloadURL(uploaded.ref);
+      const path=`events/${event.id}/${user.uid}/${Date.now()}_${safeName}`;
+      const {error:uploadError}=await supabase.storage.from('up2-media').upload(path,file,{contentType:file.type,upsert:false});
+      if(uploadError)throw uploadError;
+      const url=supabase.storage.from('up2-media').getPublicUrl(path).data.publicUrl;
       await addDoc(collection(db,'events',event.id,'photos'),{authorId:user.uid,authorName:profile.displayName,url,mediaType:file.type.startsWith('video/')?'video':'image',createdAt:serverTimestamp()});
       setToast('Added to the shared album.');setTimeout(()=>setToast(''),2500);
     }catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}finally{setUploadingAlbumFor('')}
