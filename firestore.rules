@@ -5,11 +5,7 @@ service cloud.firestore {
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
     function acceptedFollower(uid) {
       let requestPath = /databases/$(database)/documents/followRequests/$(uid)__$(request.auth.uid);
-      let legacyPath = /databases/$(database)/documents/users/$(request.auth.uid)/following/$(uid);
-      return signedIn() && (
-        (exists(requestPath) && get(requestPath).data.status == 'accepted') ||
-        exists(legacyPath)
-      );
+      return signedIn() && exists(requestPath) && get(requestPath).data.status == 'accepted';
     }
     function canReadPost(postId) {
       let postPath = /databases/$(database)/documents/posts/$(postId);
@@ -54,8 +50,7 @@ service cloud.firestore {
 
       match /following/{targetUid} {
         allow read: if isSelf(uid);
-        allow create: if isSelf(uid) && targetUid != uid
-          && request.resource.data.keys().hasOnly(['createdAt']);
+        allow create: if false;
         allow delete: if isSelf(uid);
         allow update: if false;
       }
