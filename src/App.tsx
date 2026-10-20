@@ -248,7 +248,7 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    return onSnapshot(query(collection(db, 'conversations'), where('members', 'array-contains', user.uid), orderBy('updatedAt', 'desc'), limit(100)), snap => setConversations(snap.docs.map(d => ({id:d.id,...d.data()} as Conversation))), err => console.error('Conversations:',err));
+    return onSnapshot(query(collection(db, 'conversations'), where('members', 'array-contains', user.uid), limit(100)), snap => setConversations(snap.docs.map(d => ({id:d.id,...d.data()} as Conversation)).sort((a,b)=>(b.updatedAt?.toDate?.().getTime()||0)-(a.updatedAt?.toDate?.().getTime()||0))), err => console.error('Conversations:',err));
   }, [user]);
 
   useEffect(() => {
