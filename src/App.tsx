@@ -143,7 +143,6 @@ export default function App() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [people, setPeople] = useState<Profile[]>([]);
-  const [following, setFollowing] = useState<string[]>([]);
   const [acceptedFollowing, setAcceptedFollowing] = useState<string[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<FollowRequest[]>([]);
   const [outgoingRequests, setOutgoingRequests] = useState<FollowRequest[]>([]);
@@ -181,7 +180,7 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [toast, setToast] = useState('');
-  const followingIds = [...new Set([...following, ...acceptedFollowing])];
+  const followingIds = acceptedFollowing;
 
   // Clear user-scoped data on account changes so private content never carries into another session.
   useEffect(() => {
@@ -215,11 +214,6 @@ export default function App() {
     return onSnapshot(doc(db, 'users', user.uid), snap => {
       if (snap.exists()) setProfile({ uid: user.uid, ...snap.data() } as Profile);
     });
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    return onSnapshot(collection(db, 'users', user.uid, 'following'), snap => setFollowing(snap.docs.map(d => d.id)), err => console.error('Legacy following:', err));
   }, [user]);
 
   useEffect(() => {
@@ -259,12 +253,18 @@ export default function App() {
     const unsubs: (() => void)[] = [];
     const allPosts = new Map<string, Post>();
     const publish = () => setPosts([...allPosts.values()].sort((a, b) => (b.createdAt?.toDate?.().getTime() || 0) - (a.createdAt?.toDate?.().getTime() || 0)));
+    const syncAuthorPosts = (authorId: string, snap: { docs: Array<{ id: string; data: () => Record<string, unknown> }> }) => {
+      const incoming = new Set(snap.docs.map(d => d.id));
+      for (const [id, post] of allPosts) if (post.authorId === authorId && !incoming.has(id)) allPosts.delete(id);
+      snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post));
+      publish();
+    };
     unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
-      snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
+      syncAuthorPosts(user.uid, snap);
     }, err => console.error('Your posts:', err)));
     followingIds.slice(0, 20).forEach(uid => {
       unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', uid), where('visibility', 'in', ['public', 'followers']), orderBy('createdAt', 'desc'), limit(20)), snap => {
-        snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
+        syncAuthorPosts(uid, snap);
       }, err => console.error('Friend posts:', err)));
     });
     return () => unsubs.forEach(fn => fn());
@@ -296,15 +296,23 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    const publicEvents = new Map<string, EventItem>();
+    const invitedEvents = new Map<string, EventItem>();
+    const hostedEvents = new Map<string, EventItem>();
+    const publishEvents = () => {
+      const combined = new Map<string, EventItem>();
+      [publicEvents, invitedEvents, hostedEvents].forEach(source => source.forEach((event, id) => combined.set(id, event)));
+      setEvents([...combined.values()].sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()));
+    };
     const unsubs = [
       onSnapshot(query(collection(db, 'events'), where('visibility', '==', 'public'), orderBy('startsAt', 'asc'), limit(40)), snap => {
-        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+        publicEvents.clear(); snap.docs.forEach(d => publicEvents.set(d.id, { id: d.id, ...d.data() } as EventItem)); publishEvents();
       }, err => console.error('Public events:', err)),
       onSnapshot(query(collection(db, 'events'), where('invitedUids', 'array-contains', user.uid), limit(40)), snap => {
-        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+        invitedEvents.clear(); snap.docs.forEach(d => invitedEvents.set(d.id, { id: d.id, ...d.data() } as EventItem)); publishEvents();
       }, err => console.error('Invited events:', err)),
       onSnapshot(query(collection(db, 'events'), where('hostId', '==', user.uid), limit(40)), snap => {
-        setEvents(prev => mergeEvents(prev, snap.docs.map(d => ({ id: d.id, ...d.data() } as EventItem))));
+        hostedEvents.clear(); snap.docs.forEach(d => hostedEvents.set(d.id, { id: d.id, ...d.data() } as EventItem)); publishEvents();
       }, err => console.error('Hosted events:', err)),
       onSnapshot(query(collection(db, 'notifications'), where('recipientId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
         setNotices(snap.docs.map(d => ({ id: d.id, ...d.data() } as Notice)));
@@ -315,9 +323,9 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    getDocs(query(collection(db, 'directory'), limit(100))).then(snap => {
+    return onSnapshot(query(collection(db, 'directory'), limit(100)), snap => {
       setPeople(snap.docs.filter(d => d.id !== user.uid).map(d => ({ uid: d.id, ...d.data() } as Profile)));
-    }).catch(err => console.error('People directory:', err));
+    }, err => console.error('People directory:', err));
   }, [user]);
 
   useEffect(() => {
@@ -367,7 +375,7 @@ export default function App() {
       setProfileFollowers(await loadProfiles(snap.docs.map(d => String(d.data().requesterId))));
     }, err => console.error('Profile followers:', err));
     const unsubFollowing = onSnapshot(query(collection(db, 'followRequests'), where('requesterId', '==', profilePageUid), where('status', '==', 'accepted')), async snap => {
-      const ids = [...new Set([...snap.docs.map(d => String(d.data().targetId)), ...(isOwn ? following : [])])];
+      const ids = [...new Set(snap.docs.map(d => String(d.data().targetId)))];
       setProfileFollowing(await loadProfiles(ids));
     }, err => console.error('Profile following:', err));
     return () => { unsubFollowers(); unsubFollowing(); };
@@ -520,7 +528,6 @@ export default function App() {
     try {
       if (alreadyFollowing) {
         if (acceptedFollowing.includes(person.uid)) await deleteDoc(ref);
-        if (following.includes(person.uid)) await deleteDoc(doc(db, 'users', user.uid, 'following', person.uid));
         setToast('Unfollowed.');
       } else if (pending) {
         await deleteDoc(ref); setToast('Follow request cancelled.');
