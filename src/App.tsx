@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot,
+  addDoc, collection, deleteDoc, doc, getDoc, limit, onSnapshot,
   orderBy, query, serverTimestamp, setDoc, updateDoc, where,
 } from 'firebase/firestore';
 import {
@@ -184,7 +184,7 @@ export default function App() {
 
   // Clear user-scoped data on account changes so private content never carries into another session.
   useEffect(() => {
-    setPosts([]); setEvents([]); setPeople([]); setFollowing([]); setAcceptedFollowing([]);
+    setPosts([]); setEvents([]); setPeople([]); setAcceptedFollowing([]);
     setIncomingRequests([]); setOutgoingRequests([]); setNotices([]); setConversations([]);
     setActiveConversationId(''); setChatMessages([]); setEventPhotos({}); setPostLikes({}); setPostComments({});
     setProfileDetails(null); setProfilePagePosts([]); setProfilePageUnlocked(false); setProfileFollowers([]); setProfileFollowing([]);
