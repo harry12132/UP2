@@ -64,7 +64,7 @@ service cloud.firestore {
     // A follow request becomes the canonical follow relationship only when accepted.
     match /followRequests/{requestId} {
       allow get, list: if signedIn() &&
-        (resource.data.requesterId == request.auth.uid || resource.data.targetId == request.auth.uid);
+        (resource.data.requesterId == request.auth.uid || resource.data.targetId == request.auth.uid || acceptedFollower(resource.data.targetId));
       allow create: if signedIn()
         && request.resource.data.requesterId == request.auth.uid
         && request.resource.data.targetId is string
