@@ -4,8 +4,9 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
     function acceptedFollower(uid) {
-      let requestPath = /databases/$(database)/documents/followRequests/$(uid)__$(request.auth.uid);
-      return signedIn() && exists(requestPath) && get(requestPath).data.status == 'accepted';
+      return signedIn() &&
+        exists(/databases/$(database)/documents/followRequests/$(uid)__$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/followRequests/$(uid)__$(request.auth.uid)).data.status == 'accepted';
     }
     function canReadPost(postId) {
       let postPath = /databases/$(database)/documents/posts/$(postId);
@@ -172,7 +173,7 @@ service cloud.firestore {
       return exists(eventPath) && members is list &&
         get(eventPath).data.hostId in members &&
         members.toSet().difference(get(eventPath).data.invitedUids.toSet()).hasOnly([get(eventPath).data.hostId]) &&
-        get(eventPath).data.invitedUids.toSet().difference(members.toSet()).size() == 0;
+        get(eventPath).data.invitedUids.toSet().difference(members.toSet()).hasOnly([]);
     }
     function validConversation(conversationId) {
       let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
