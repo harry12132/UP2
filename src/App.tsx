@@ -324,6 +324,9 @@ export default function App() {
     if (!user || !profilePageUid) return;
     const isOwn = profilePageUid === user.uid;
     const directoryProfile = isOwn ? profile : (people.find(person => person.uid === profilePageUid) || null);
+    setProfileDetails(directoryProfile);
+    setProfilePagePosts([]);
+    setProfilePageUnlocked(false);
     if (!isOwn && !followingIds.includes(profilePageUid)) {
       setProfileDetails(directoryProfile);
       setProfilePagePosts([]);
@@ -522,10 +525,8 @@ export default function App() {
       } else if (pending) {
         await deleteDoc(ref); setToast('Follow request cancelled.');
       } else {
-        const existing = await getDoc(ref);
-        const payload = { requesterId: user.uid, requesterName: profile.displayName, requesterPhoto: profile.photoURL || '', targetId: person.uid, status: 'pending', updatedAt: serverTimestamp() };
-        if (existing.exists()) await updateDoc(ref, { ...payload, createdAt: serverTimestamp() });
-        else await setDoc(ref, { ...payload, createdAt: serverTimestamp() });
+        const payload = { requesterId: user.uid, requesterName: profile.displayName, requesterPhoto: profile.photoURL || '', targetId: person.uid, status: 'pending', createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+        await setDoc(ref, payload);
         setToast('Follow request sent.');
       }
       setTimeout(() => setToast(''), 2800);
