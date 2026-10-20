@@ -10,11 +10,14 @@ import {
 import {
   ArrowUpRight, Bell, CalendarDays, Check, ChevronDown, Clock3, Compass,
   Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
+  ImagePlus, Share2, Send, Trash2,
 } from 'lucide-react';
-import { auth, db, googleProvider } from './firebase';
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { auth, db, googleProvider, storage } from './firebase';
 
 type Profile = { uid: string; displayName: string; photoURL?: string; bio?: string };
-type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; createdAt?: { toDate?: () => Date } };
+type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; mediaUrl?: string; mediaType?: string; createdAt?: { toDate?: () => Date } };
+type CommentItem = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; createdAt?: { toDate?: () => Date } };
 type EventItem = { id: string; hostId: string; hostName: string; title: string; description?: string; location?: string; startsAt: string; visibility: 'public' | 'selected'; invitedUids: string[]; attendeeUids: string[]; createdAt?: { toDate?: () => Date } };
 type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
 type Tab = 'home' | 'events' | 'people' | 'invites';
@@ -138,6 +141,12 @@ export default function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [postText, setPostText] = useState('');
   const [postAudience, setPostAudience] = useState<'followers' | 'public'>('followers');
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState('');
+  const [postLikes, setPostLikes] = useState<Record<string, { count: number; liked: boolean }>>({});
+  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({});
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
   const [eventOpen, setEventOpen] = useState(false);
   const [eventTitle, setEventTitle] = useState('');
   const [eventDescription, setEventDescription] = useState('');
@@ -147,6 +156,7 @@ export default function App() {
   const [invitees, setInvitees] = useState<string[]>([]);
   const [peopleSearch, setPeopleSearch] = useState('');
   const [saving, setSaving] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const [toast, setToast] = useState('');
 
   useEffect(() => onAuthStateChanged(auth, async current => {
@@ -177,6 +187,28 @@ export default function App() {
     if (!user) return;
     return onSnapshot(collection(db, 'users', user.uid, 'following'), snap => setFollowing(snap.docs.map(d => d.id)));
   }, [user]);
+
+  useEffect(() => {
+    if (!mediaFile) { setMediaPreview(''); return; }
+    const previewUrl = URL.createObjectURL(mediaFile);
+    setMediaPreview(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [mediaFile]);
+
+  useEffect(() => {
+    if (!user || posts.length === 0) return;
+    const unsubs: (() => void)[] = [];
+    posts.forEach(post => {
+      // Live subscriptions keep likes and comment threads in sync across devices.
+      unsubs.push(onSnapshot(collection(db, 'posts', post.id, 'likes'), snap => {
+        setPostLikes(prev => ({ ...prev, [post.id]: { count: snap.size, liked: snap.docs.some(d => d.id === user.uid) } }));
+      }, err => console.error('Post likes:', err)));
+      unsubs.push(onSnapshot(query(collection(db, 'posts', post.id, 'comments'), orderBy('createdAt', 'asc'), limit(50)), snap => {
+        setPostComments(prev => ({ ...prev, [post.id]: snap.docs.map(d => ({ id: d.id, ...d.data() } as CommentItem)) }));
+      }, err => console.error('Post comments:', err)));
+    });
+    return () => unsubs.forEach(unsub => unsub());
+  }, [user, posts.map(post => post.id).join('|')]);
 
   useEffect(() => {
     if (!user) return;
@@ -236,17 +268,71 @@ export default function App() {
       setToast('Your profile is still loading. Please wait a moment and try again.');
       return;
     }
-    if (!postText.trim()) return;
+    if (!postText.trim() && !mediaFile) return;
+    if (mediaFile && mediaFile.size > 100 * 1024 * 1024) { setToast('That file is over 100 MB. Choose a smaller photo or video.'); return; }
+    if (mediaFile && !mediaFile.type.startsWith('image/') && !mediaFile.type.startsWith('video/')) { setToast('Choose an image or video file.'); return; }
 
     setSaving(true);
+    setUploadingMedia(Boolean(mediaFile));
     try {
+      let mediaUrl = '';
+      let mediaType = '';
+      if (mediaFile) {
+        const safeName = mediaFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const fileRef = storageRef(storage, `posts/${user.uid}/${Date.now()}_${safeName}`);
+        const uploaded = await uploadBytes(fileRef, mediaFile, { contentType: mediaFile.type });
+        mediaUrl = await getDownloadURL(uploaded.ref);
+        mediaType = mediaFile.type.startsWith('video/') ? 'video' : 'image';
+      }
       await addDoc(collection(db, 'posts'), {
         authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '',
-        text: postText.trim(), visibility: postAudience, audienceUids: [], createdAt: serverTimestamp(),
+        text: postText.trim(), visibility: postAudience, audienceUids: [],
+        ...(mediaUrl ? { mediaUrl, mediaType } : {}), createdAt: serverTimestamp(),
       });
-      setPostText(''); setToast('Out there. Go live your life.'); setTimeout(() => setToast(''), 2800);
+      setPostText(''); setMediaFile(null); setToast('Out there. Go live your life.'); setTimeout(() => setToast(''), 2800);
     } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 4000); }
-    finally { setSaving(false); }
+    finally { setSaving(false); setUploadingMedia(false); }
+  }
+
+  async function toggleLike(post: Post) {
+    if (!user) return;
+    const likeRef = doc(db, 'posts', post.id, 'likes', user.uid);
+    try {
+      if (postLikes[post.id]?.liked) await deleteDoc(likeRef);
+      else await setDoc(likeRef, { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Someone', createdAt: serverTimestamp() });
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function addComment(post: Post, e: FormEvent) {
+    e.preventDefault();
+    if (!user || !profile) { setToast('Your profile is still loading. Try again in a moment.'); return; }
+    const text = (commentDrafts[post.id] || '').trim();
+    if (!text) return;
+    try {
+      await addDoc(collection(db, 'posts', post.id, 'comments'), {
+        authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '', text, createdAt: serverTimestamp(),
+      });
+      setCommentDrafts(prev => ({ ...prev, [post.id]: '' }));
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function deleteComment(post: Post, comment: CommentItem) {
+    if (!user || comment.authorId !== user.uid) return;
+    try { await deleteDoc(doc(db, 'posts', post.id, 'comments', comment.id)); }
+    catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function sharePost(post: Post) {
+    const url = `${window.location.origin}/?post=${encodeURIComponent(post.id)}`;
+    try {
+      if (navigator.share) await navigator.share({ title: `UP2 · ${post.authorName}`, text: post.text || 'Check out this post on UP2', url });
+      else { await navigator.clipboard.writeText(url); setToast('Post link copied. Send it to your people.'); setTimeout(() => setToast(''), 2800); }
+    } catch (err) {
+      if ((err as { name?: string })?.name !== 'AbortError') {
+        try { await navigator.clipboard.writeText(url); setToast('Post link copied.'); setTimeout(() => setToast(''), 2800); }
+        catch { setToast('Sharing is unavailable in this browser.'); setTimeout(() => setToast(''), 2800); }
+      }
+    }
   }
 
   async function followPerson(person: Profile) {
@@ -336,10 +422,13 @@ export default function App() {
           <div className="page-heading"><div><span className="eyebrow">YOUR CORNER OF THE WORLD</span><h1>What's <em>up?</em></h1><p>Catch up with your people. Then get out there.</p></div><div className="heading-scribble">less scroll<br />more soul <span>↗</span></div></div>
           <form className="composer card" onSubmit={publishPost}>
             <Avatar name={profile?.displayName || 'You'} photo={profile?.photoURL || undefined} size="large" />
-            <div className="composer-main"><textarea value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening in your world?" maxLength={2000} rows={2} /><div className="composer-bottom"><label className="audience-select"><Users size={14} /><select value={postAudience} onChange={e => setPostAudience(e.target.value as 'followers' | 'public')}><option value="followers">Your people</option><option value="public">Everyone in UP2</option></select><ChevronDown size={13} /></label><button className="button button-dark button-small" disabled={!postText.trim() || saving}>Share <ArrowUpRight size={15} /></button></div></div>
+            <div className="composer-main"><textarea value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening in your world?" maxLength={2000} rows={2} />
+              {mediaPreview && <div className="media-preview">{mediaFile?.type.startsWith('video/') ? <video src={mediaPreview} controls /> : <img src={mediaPreview} alt="Selected upload preview" />}<button type="button" className="media-remove" onClick={() => setMediaFile(null)} aria-label="Remove media"><X size={15} /></button></div>}
+              <div className="composer-bottom"><div className="composer-tools"><label className="media-pick" title="Add a photo or video"><ImagePlus size={16} /><span>Photo / video</span><input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" onChange={e => setMediaFile(e.target.files?.[0] || null)} /></label><label className="audience-select"><Users size={14} /><select value={postAudience} onChange={e => setPostAudience(e.target.value as 'followers' | 'public')}><option value="followers">Your people</option><option value="public">Everyone in UP2</option></select><ChevronDown size={13} /></label></div><button className="button button-dark button-small" disabled={(!postText.trim() && !mediaFile) || saving}>{uploadingMedia ? 'Uploading…' : 'Share'} <ArrowUpRight size={15} /></button></div>
+            </div>
           </form>
           <div className="section-label"><span>THE LATEST</span><span className="section-line" /><span className="muted">{posts.length} posts</span></div>
-          {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · {post.visibility === 'public' ? 'Everyone' : 'Their people'}</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p><div className="post-footer"><span><Heart size={15} /> A little love goes a long way</span><button onClick={() => setToast('Comments are on the roadmap. For now, say hi in person.')}><MessageCircle size={15} /> Say something</button></div></article>)}</div>}
+          {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · {post.visibility === 'public' ? 'Everyone' : 'Their people'}</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p>{post.mediaUrl && <div className="post-media">{post.mediaType === 'video' ? <video src={post.mediaUrl} controls playsInline preload="metadata" /> : <img src={post.mediaUrl} alt={`Photo shared by ${post.authorName}`} loading="lazy" />}</div>}<div className="post-footer"><button className={'post-action ' + (postLikes[post.id]?.liked ? 'post-action-liked' : '')} onClick={() => void toggleLike(post)} aria-label={postLikes[post.id]?.liked ? 'Unlike post' : 'Like post'}><Heart size={16} fill={postLikes[post.id]?.liked ? 'currentColor' : 'none'} /> <strong>{postLikes[post.id]?.count || 0}</strong> {postLikes[post.id]?.liked ? 'Liked' : 'Like'}</button><button className="post-action" onClick={() => setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] }))}><MessageCircle size={16} /> <strong>{postComments[post.id]?.length || 0}</strong> Comment</button><button className="post-action" onClick={() => void sharePost(post)}><Share2 size={15} /> Share</button></div>{openComments[post.id] && <div className="comments-panel"><div className="comments-list">{(postComments[post.id] || []).map(comment => <div className="comment-row" key={comment.id}><Avatar name={comment.authorName} photo={comment.authorPhoto} size="small" /><div className="comment-bubble"><strong>{comment.authorName}</strong><p>{comment.text}</p><small>{timeAgo(comment.createdAt)}</small></div>{comment.authorId === user.uid && <button className="comment-delete" onClick={() => void deleteComment(post, comment)} aria-label="Delete your comment"><Trash2 size={13} /></button>}</div>)}{(postComments[post.id] || []).length === 0 && <p className="comments-empty">Start the conversation.</p>}</div><form className="comment-form" onSubmit={e => void addComment(post, e)}><input value={commentDrafts[post.id] || ''} onChange={e => setCommentDrafts(prev => ({ ...prev, [post.id]: e.target.value }))} placeholder="Write a comment…" maxLength={500} aria-label="Write a comment" /><button type="submit" disabled={!(commentDrafts[post.id] || '').trim()} aria-label="Send comment"><Send size={16} /></button></form></div>}</article>)}</div>}
           <div className="caught-up"><span className="caught-icon"><Check size={16} /></span><p><strong>That's you caught up.</strong><br /><span>Go make something happen.</span></p></div>
         </section>}
 
