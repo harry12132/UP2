@@ -22,6 +22,7 @@ type EventItem = { id: string; hostId: string; hostName: string; title: string; 
 type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
 type Conversation = { id:string; type:'direct'|'event'; members:string[]; memberNames?:Record<string,string>; eventId?:string; eventTitle?:string; title?:string; lastMessage?:string; lastSenderId?:string; updatedAt?:{toDate?:()=>Date} };
 type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
+type EventPhoto = { id:string; authorId:string; authorName:string; url:string; mediaType?:string; createdAt?:{toDate?:()=>Date} };
 type Tab = 'home' | 'events' | 'messages' | 'memories' | 'people' | 'invites';
 
 const timeAgo = (value?: { toDate?: () => Date }) => {
@@ -145,6 +146,8 @@ export default function App() {
   const [activeConversationId, setActiveConversationId] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState('');
+  const [eventPhotos, setEventPhotos] = useState<Record<string,EventPhoto[]>>({});
+  const [uploadingAlbumFor, setUploadingAlbumFor] = useState('');
   const [postText, setPostText] = useState('');
   const [postAudience, setPostAudience] = useState<'followers' | 'public'>('followers');
   const [mediaFile, setMediaFile] = useState<File | null>(null);
@@ -282,6 +285,13 @@ export default function App() {
     }).catch(err => console.error('People:', err));
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+    const mine=events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid);
+    const unsubs=mine.map(event=>onSnapshot(collection(db,'events',event.id,'photos'),snap=>setEventPhotos(prev=>({...prev,[event.id]:snap.docs.map(d=>({id:d.id,...d.data()} as EventPhoto))})),err=>console.error('Event album:',err)));
+    return ()=>unsubs.forEach(unsub=>unsub());
+  },[user,events.map(e=>e.id+':'+(e.attendeeUids||[]).join(',')).join('|')]);
+
   const invitedEvents = useMemo(() => events.filter(e => e.hostId !== user?.uid && e.invitedUids?.includes(user?.uid || '') && !e.attendeeUids?.includes(user?.uid || '')), [events, user]);
   const unread = notices.filter(n => !n.read).length;
   const filteredPeople = people.filter(p => p.displayName.toLowerCase().includes(peopleSearch.toLowerCase()));
@@ -370,6 +380,21 @@ export default function App() {
     const members=[user.uid,person.uid].sort(); const id='dm_'+members.join('_'); const ref=doc(db,'conversations',id);
     try { const existing=await getDoc(ref); if(!existing.exists()) await setDoc(ref,{type:'direct',members,memberNames:{[user.uid]:profile.displayName,[person.uid]:person.displayName},lastMessage:'',lastSenderId:'',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}); setActiveConversationId(id);setTab('messages'); }
     catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}
+  }
+
+  async function uploadEventPhoto(event: EventItem, file?: File) {
+    if(!user||!profile||!file)return;
+    if(!file.type.startsWith('image/')&&!file.type.startsWith('video/')){setToast('Choose a photo or video.');return;}
+    if(file.size>100*1024*1024){setToast('That file is over 100 MB.');return;}
+    setUploadingAlbumFor(event.id);
+    try{
+      const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+      const fileRef=storageRef(storage,`events/${event.id}/${user.uid}/${Date.now()}_${safeName}`);
+      const uploaded=await uploadBytes(fileRef,file,{contentType:file.type});
+      const url=await getDownloadURL(uploaded.ref);
+      await addDoc(collection(db,'events',event.id,'photos'),{authorId:user.uid,authorName:profile.displayName,url,mediaType:file.type.startsWith('video/')?'video':'image',createdAt:serverTimestamp()});
+      setToast('Added to the shared album.');setTimeout(()=>setToast(''),2500);
+    }catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}finally{setUploadingAlbumFor('')}
   }
 
   async function sendMessage(e: FormEvent) {
@@ -486,7 +511,7 @@ export default function App() {
 
         {tab === 'messages' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOUR PEOPLE, IN YOUR POCKET</span><h1>Your <em>messages.</em></h1><p>Private conversations and event group chats in one place.</p></div></div><div className="messenger-layout"><aside className="conversation-list">{conversations.length===0?<div className="conversation-empty"><MessageCircle size={22}/><strong>Start a conversation</strong><p>Find someone you know and message them.</p><button className="button button-outline button-small" onClick={()=>setTab('people')}>Find people</button></div>:conversations.map(c=>{const other=c.members.find(uid=>uid!==user.uid)||user.uid;const name=c.type==='event'?(c.eventTitle||c.title||'Event chat'):(c.memberNames?.[other]||people.find(p=>p.uid===other)?.displayName||'Friend');return <button key={c.id} className={'conversation-row '+(activeConversationId===c.id?'conversation-active':'')} onClick={()=>setActiveConversationId(c.id)}><span className="conversation-avatar">{c.type==='event'?<CalendarDays size={17}/>:initials(name)}</span><span className="conversation-copy"><strong>{name}</strong><small>{c.type==='event'?'Event group chat':'Direct message'}</small><span>{c.lastMessage||'Say hello'}</span></span></button>})}</aside><section className="chat-panel">{!activeConversationId?<div className="chat-placeholder"><MessageCircle size={30}/><h3>Pick a conversation</h3><p>Your event chats and direct messages will appear here.</p></div>:<><div className="chat-head"><div><span className="eyebrow">{conversations.find(c=>c.id===activeConversationId)?.type==='event'?'EVENT CHAT':'DIRECT MESSAGE'}</span><h2>{conversations.find(c=>c.id===activeConversationId)?.eventTitle||conversations.find(c=>c.id===activeConversationId)?.memberNames?.[conversations.find(c=>c.id===activeConversationId)?.members.find(uid=>uid!==user.uid)||'']||'Conversation'}</h2></div></div><div className="chat-message-list">{chatMessages.length===0?<div className="chat-placeholder"><p>This is the beginning. Say something.</p></div>:chatMessages.map(m=><div key={m.id} className={'chat-message '+(m.senderId===user.uid?'chat-message-own':'')}><strong>{m.senderId===user.uid?'You':m.senderName}</strong><p>{m.text}</p><small>{timeAgo(m.createdAt)}</small></div>)}</div><form className="chat-compose" onSubmit={sendMessage}><input value={messageDraft} onChange={e=>setMessageDraft(e.target.value)} placeholder="Write a message…" maxLength={2000}/><button type="submit" disabled={!messageDraft.trim()} aria-label="Send message"><Send size={17}/></button></form></>}</section></div></section>}
 
-        {tab === 'memories' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">THE GOOD STUFF STAYS</span><h1>Your <em>memories.</em></h1><p>Your events, with their conversations and shared photos.</p></div></div><div className="memory-grid">{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).sort((a,b)=>new Date(b.startsAt).getTime()-new Date(a.startsAt).getTime()).map(e=><article className="memory-card card" key={e.id}><div className="memory-cover"><CalendarDays size={26}/><span>{new Date(e.startsAt).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})}</span></div><div className="memory-copy"><span className="eyebrow">{new Date(e.startsAt).getTime()<Date.now()?'FROM THE ARCHIVE':'COMING UP'}</span><h3>{e.title}</h3><p>{e.location||'A moment with your people'}</p><button className="button button-outline button-small" onClick={()=>{const c=conversations.find(c=>c.eventId===e.id);if(c){setActiveConversationId(c.id);setTab('messages')}else setToast('Event chat is not available for this event yet.')}}>Open event chat <ArrowUpRight size={14}/></button></div></article>)}{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).length===0&&<EmptyState icon={<ImagePlus size={21}/>} title="Your story starts here." body="Events you attend will collect here." action="Find a plan" onClick={()=>setTab('events')}/>}</div></section>}
+        {tab === 'memories' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">THE GOOD STUFF STAYS</span><h1>Your <em>memories.</em></h1><p>Your events, with their conversations and shared photos.</p></div></div><div className="memory-grid">{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).sort((a,b)=>new Date(b.startsAt).getTime()-new Date(a.startsAt).getTime()).map(e=><article className="memory-card card" key={e.id}><div className="memory-cover"><CalendarDays size={26}/><span>{new Date(e.startsAt).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})}</span></div><div className="memory-copy"><span className="eyebrow">{new Date(e.startsAt).getTime()<Date.now()?'FROM THE ARCHIVE':'COMING UP'}</span><h3>{e.title}</h3><p>{e.location||'A moment with your people'}</p><div className="album-photos">{(eventPhotos[e.id]||[]).map(photo=><a key={photo.id} href={photo.url} target="_blank" rel="noreferrer" className="album-photo" aria-label={'Open photo shared by '+photo.authorName}>{photo.mediaType==='video'?<video src={photo.url} muted preload="metadata"/>:<img src={photo.url} alt={'Shared by '+photo.authorName} loading="lazy"/>}</a>)}</div><div className="album-actions"><label className="button button-outline button-small album-upload">{uploadingAlbumFor===e.id?'Uploading…':'Add photos'} <ImagePlus size={14}/><input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" disabled={uploadingAlbumFor===e.id} onChange={event=>{void uploadEventPhoto(e,event.target.files?.[0]);event.currentTarget.value='';}}/></label><button className="button button-outline button-small" onClick={()=>{const c=conversations.find(c=>c.eventId===e.id);if(c){setActiveConversationId(c.id);setTab('messages')}else setToast('Event chat is not available for this event yet.')}}>Open chat <ArrowUpRight size={14}/></button></div></div></article>)}{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).length===0&&<EmptyState icon={<ImagePlus size={21}/>} title="Your story starts here." body="Events you attend will collect here." action="Find a plan" onClick={()=>setTab('events')}/>}</div></section>}
 
         {tab === 'invites' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOU'RE ON THE LIST</span><h1>You're <em>invited.</em></h1><p>Good things start with someone thinking of you.</p></div></div>
           <div className="section-label"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
