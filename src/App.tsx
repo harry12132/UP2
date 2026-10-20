@@ -20,7 +20,9 @@ type Post = { id: string; authorId: string; authorName: string; authorPhoto?: st
 type CommentItem = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; createdAt?: { toDate?: () => Date } };
 type EventItem = { id: string; hostId: string; hostName: string; title: string; description?: string; location?: string; startsAt: string; visibility: 'public' | 'selected'; invitedUids: string[]; attendeeUids: string[]; createdAt?: { toDate?: () => Date } };
 type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
-type Tab = 'home' | 'events' | 'people' | 'invites';
+type Conversation = { id:string; type:'direct'|'event'; members:string[]; memberNames?:Record<string,string>; eventId?:string; eventTitle?:string; title?:string; lastMessage?:string; lastSenderId?:string; updatedAt?:{toDate?:()=>Date} };
+type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
+type Tab = 'home' | 'events' | 'messages' | 'memories' | 'people' | 'invites';
 
 const timeAgo = (value?: { toDate?: () => Date }) => {
   const date = value?.toDate?.();
@@ -139,6 +141,10 @@ export default function App() {
   const [people, setPeople] = useState<Profile[]>([]);
   const [following, setFollowing] = useState<string[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [messageDraft, setMessageDraft] = useState('');
   const [postText, setPostText] = useState('');
   const [postAudience, setPostAudience] = useState<'followers' | 'public'>('followers');
   const [mediaFile, setMediaFile] = useState<File | null>(null);
@@ -239,6 +245,16 @@ export default function App() {
       if (snap.exists()) setPosts(prev => prev.some(post => post.id === snap.id) ? prev : [{ id: snap.id, ...snap.data() } as Post, ...prev]);
     }).catch(err => console.error('Shared post:', err));
   }, [posts]);
+
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(query(collection(db, 'conversations'), where('members', 'array-contains', user.uid), orderBy('updatedAt', 'desc'), limit(100)), snap => setConversations(snap.docs.map(d => ({id:d.id,...d.data()} as Conversation))), err => console.error('Conversations:',err));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !activeConversationId) { setChatMessages([]); return; }
+    return onSnapshot(query(collection(db,'conversations',activeConversationId,'messages'),orderBy('createdAt','asc'),limit(100)),snap=>setChatMessages(snap.docs.map(d=>({id:d.id,...d.data()} as ChatMessage))),err=>console.error('Messages:',err));
+  },[user,activeConversationId]);
 
   useEffect(() => {
     if (!user) return;
@@ -349,6 +365,20 @@ export default function App() {
     }
   }
 
+  async function startConversation(person: Profile) {
+    if (!user || !profile) return;
+    const members=[user.uid,person.uid].sort(); const id='dm_'+members.join('_'); const ref=doc(db,'conversations',id);
+    try { const existing=await getDoc(ref); if(!existing.exists()) await setDoc(ref,{type:'direct',members,memberNames:{[user.uid]:profile.displayName,[person.uid]:person.displayName},lastMessage:'',lastSenderId:'',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}); setActiveConversationId(id);setTab('messages'); }
+    catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}
+  }
+
+  async function sendMessage(e: FormEvent) {
+    e.preventDefault(); const text=messageDraft.trim(); if(!user||!profile||!activeConversationId||!text)return;
+    const conversation=conversations.find(c=>c.id===activeConversationId); if(!conversation||!conversation.members.includes(user.uid))return;
+    try { await addDoc(collection(db,'conversations',activeConversationId,'messages'),{senderId:user.uid,senderName:profile.displayName,text,createdAt:serverTimestamp()}); await updateDoc(doc(db,'conversations',activeConversationId),{lastMessage:text.slice(0,180),lastSenderId:user.uid,updatedAt:serverTimestamp()});setMessageDraft(''); }
+    catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}
+  }
+
   async function followPerson(person: Profile) {
     if (!user) return;
     const ref = doc(db, 'users', user.uid, 'following', person.uid);
@@ -380,6 +410,7 @@ export default function App() {
         visibility: eventVisibility, invitedUids: inviteIds, attendeeUids: [user.uid],
         createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
+      await setDoc(doc(db,'conversations',`event_${ref.id}`),{type:'event',eventId:ref.id,eventTitle:eventTitle.trim(),title:eventTitle.trim(),members:[...new Set([user.uid,...inviteIds])],memberNames:Object.fromEntries([{uid:user.uid,name:profile.displayName},...people.filter(p=>inviteIds.includes(p.uid)).map(p=>({uid:p.uid,name:p.displayName}))].map(x=>[x.uid,x.name])),lastMessage:'Event chat created',lastSenderId:user.uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       if (inviteIds.length) {
         await Promise.all(inviteIds.map(recipientId => addDoc(collection(db, 'notifications'), {
           recipientId, actorId: user.uid, actorName: profile.displayName, type: 'event_invite',
@@ -414,7 +445,9 @@ export default function App() {
       <div className="sidebar-caption">YOUR CORNER</div>
       <nav className="main-nav">
         <NavButton active={tab === 'home'} icon={<Sparkles size={18} />} label="Your feed" onClick={() => setTab('home')} />
-        <NavButton active={tab === 'events'} icon={<CalendarDays size={18} />} label="Events" onClick={() => setTab('events')} />
+        <NavButton active={tab === 'events'} icon={<CalendarDays size={18} />} label="Plans" onClick={() => setTab('events')} />
+        <NavButton active={tab === 'messages'} icon={<MessageCircle size={18} />} label="Messages" count={conversations.filter(c=>c.lastSenderId&&c.lastSenderId!==user.uid).length} onClick={() => setTab('messages')} />
+        <NavButton active={tab === 'memories'} icon={<ImagePlus size={18} />} label="Memories" onClick={() => setTab('memories')} />
         <NavButton active={tab === 'invites'} icon={<Bell size={18} />} label="Invitations" count={unread + invitedEvents.length} onClick={() => setTab('invites')} />
         <NavButton active={tab === 'people'} icon={<Users size={18} />} label="Find your people" onClick={() => setTab('people')} />
       </nav>
@@ -451,6 +484,10 @@ export default function App() {
           {events.length === 0 ? <EmptyState icon={<CalendarDays size={21} />} title="Nothing on the calendar. Yet." body="Be the person who makes something happen. Invite your friends or put a public plan out there." action="Create an event" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{[...events].sort((a,b) => new Date(a.startsAt).getTime()-new Date(b.startsAt).getTime()).map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
         </section>}
 
+        {tab === 'messages' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOUR PEOPLE, IN YOUR POCKET</span><h1>Your <em>messages.</em></h1><p>Private conversations and event group chats in one place.</p></div></div><div className="messenger-layout"><aside className="conversation-list">{conversations.length===0?<div className="conversation-empty"><MessageCircle size={22}/><strong>Start a conversation</strong><p>Find someone you know and message them.</p><button className="button button-outline button-small" onClick={()=>setTab('people')}>Find people</button></div>:conversations.map(c=>{const other=c.members.find(uid=>uid!==user.uid)||user.uid;const name=c.type==='event'?(c.eventTitle||c.title||'Event chat'):(c.memberNames?.[other]||people.find(p=>p.uid===other)?.displayName||'Friend');return <button key={c.id} className={'conversation-row '+(activeConversationId===c.id?'conversation-active':'')} onClick={()=>setActiveConversationId(c.id)}><span className="conversation-avatar">{c.type==='event'?<CalendarDays size={17}/>:initials(name)}</span><span className="conversation-copy"><strong>{name}</strong><small>{c.type==='event'?'Event group chat':'Direct message'}</small><span>{c.lastMessage||'Say hello'}</span></span></button>})}</aside><section className="chat-panel">{!activeConversationId?<div className="chat-placeholder"><MessageCircle size={30}/><h3>Pick a conversation</h3><p>Your event chats and direct messages will appear here.</p></div>:<><div className="chat-head"><div><span className="eyebrow">{conversations.find(c=>c.id===activeConversationId)?.type==='event'?'EVENT CHAT':'DIRECT MESSAGE'}</span><h2>{conversations.find(c=>c.id===activeConversationId)?.eventTitle||conversations.find(c=>c.id===activeConversationId)?.memberNames?.[conversations.find(c=>c.id===activeConversationId)?.members.find(uid=>uid!==user.uid)||'']||'Conversation'}</h2></div></div><div className="chat-message-list">{chatMessages.length===0?<div className="chat-placeholder"><p>This is the beginning. Say something.</p></div>:chatMessages.map(m=><div key={m.id} className={'chat-message '+(m.senderId===user.uid?'chat-message-own':'')}><strong>{m.senderId===user.uid?'You':m.senderName}</strong><p>{m.text}</p><small>{timeAgo(m.createdAt)}</small></div>)}</div><form className="chat-compose" onSubmit={sendMessage}><input value={messageDraft} onChange={e=>setMessageDraft(e.target.value)} placeholder="Write a message…" maxLength={2000}/><button type="submit" disabled={!messageDraft.trim()} aria-label="Send message"><Send size={17}/></button></form></>}</section></div></section>}
+
+        {tab === 'memories' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">THE GOOD STUFF STAYS</span><h1>Your <em>memories.</em></h1><p>Your events, with their conversations and shared photos.</p></div></div><div className="memory-grid">{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).sort((a,b)=>new Date(b.startsAt).getTime()-new Date(a.startsAt).getTime()).map(e=><article className="memory-card card" key={e.id}><div className="memory-cover"><CalendarDays size={26}/><span>{new Date(e.startsAt).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})}</span></div><div className="memory-copy"><span className="eyebrow">{new Date(e.startsAt).getTime()<Date.now()?'FROM THE ARCHIVE':'COMING UP'}</span><h3>{e.title}</h3><p>{e.location||'A moment with your people'}</p><button className="button button-outline button-small" onClick={()=>{const c=conversations.find(c=>c.eventId===e.id);if(c){setActiveConversationId(c.id);setTab('messages')}else setToast('Event chat is not available for this event yet.')}}>Open event chat <ArrowUpRight size={14}/></button></div></article>)}{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).length===0&&<EmptyState icon={<ImagePlus size={21}/>} title="Your story starts here." body="Events you attend will collect here." action="Find a plan" onClick={()=>setTab('events')}/>}</div></section>}
+
         {tab === 'invites' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOU'RE ON THE LIST</span><h1>You're <em>invited.</em></h1><p>Good things start with someone thinking of you.</p></div></div>
           <div className="section-label"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
           {invitedEvents.length === 0 ? <EmptyState icon={<Bell size={21} />} title="No invitations just yet." body="When a friend invites you to something, you'll find it here. You could always be the one to start a plan." action="Make a plan" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{invitedEvents.map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
@@ -461,7 +498,7 @@ export default function App() {
           <div className="people-search"><Search size={17} /><input value={peopleSearch} onChange={e => setPeopleSearch(e.target.value)} placeholder="Search by name or email" /></div>
           {followedProfiles.length > 0 && <><div className="section-label"><span>YOUR PEOPLE</span><span className="section-line" /><span className="muted">{followedProfiles.length}</span></div><div className="people-grid">{followedProfiles.map(person => <PersonCard key={person.uid} person={person} following onFollow={() => followPerson(person)} />)}</div></>}
           <div className="section-label section-label-spaced"><span>MEET THE COMMUNITY</span><span className="section-line" /></div>
-          {filteredPeople.length === 0 ? <EmptyState icon={<Users size={21} />} title="No one by that name yet." body="Try another search, or invite a friend to join UP2." /> : <div className="people-grid">{filteredPeople.map(person => <PersonCard key={person.uid} person={person} following={following.includes(person.uid)} onFollow={() => followPerson(person)} />)}</div>}
+          {filteredPeople.length === 0 ? <EmptyState icon={<Users size={21} />} title="No one by that name yet." body="Try another search, or invite a friend to join UP2." /> : <div className="people-grid">{filteredPeople.map(person => <PersonCard key={person.uid} person={person} following={following.includes(person.uid)} onFollow={() => followPerson(person)} onMessage={() => void startConversation(person)} />)}</div>}
         </section>}
       </div>
       <footer className="site-footer"><span>UP2 © 2026</span><span>YOUR PEOPLE. YOUR PLANS. YOUR LIFE.</span><button onClick={() => setToast('Privacy and community guidelines are being prepared for the beta launch.')}>Community & privacy</button></footer>
@@ -469,7 +506,8 @@ export default function App() {
 
     <nav className="mobile-nav">
       <NavButton active={tab === 'home'} icon={<Sparkles size={19} />} label="Feed" onClick={() => setTab('home')} />
-      <NavButton active={tab === 'events'} icon={<CalendarDays size={19} />} label="Events" onClick={() => setTab('events')} />
+      <NavButton active={tab === 'events'} icon={<CalendarDays size={19} />} label="Plans" onClick={() => setTab('events')} />
+      <NavButton active={tab === 'messages'} icon={<MessageCircle size={19} />} label="Chats" onClick={() => setTab('messages')} />
       <button className="mobile-create" onClick={() => setEventOpen(true)} aria-label="Create event"><Plus size={22} /></button>
       <NavButton active={tab === 'invites'} icon={<Bell size={19} />} label="Invites" count={unread} onClick={() => setTab('invites')} />
       <NavButton active={tab === 'people'} icon={<Users size={19} />} label="People" onClick={() => setTab('people')} />
@@ -501,8 +539,8 @@ function NavButton({ active, icon, label, count, onClick }: { active: boolean; i
 function EmptyState({ icon, title, body, action, onClick }: { icon: React.ReactNode; title: string; body: string; action?: string; onClick?: () => void }) {
   return <div className="empty-state"><span className="empty-icon">{icon}</span><h3>{title}</h3><p>{body}</p>{action && <button className="button button-outline" onClick={onClick}>{action} <ArrowUpRight size={15} /></button>}</div>;
 }
-function PersonCard({ person, following, onFollow }: { person: Profile; following: boolean; onFollow: () => void }) {
-  return <article className="person-card card"><Avatar name={person.displayName} photo={person.photoURL} size="large" /><div className="person-info"><strong>{person.displayName}</strong><span>{person.bio || 'Here for the real-life stuff.'}</span></div><button className={'follow-button ' + (following ? 'following' : '')} onClick={onFollow}>{following ? <><Check size={14} /> Following</> : <><Plus size={14} /> Follow</>}</button></article>;
+function PersonCard({ person, following, onFollow, onMessage }: { person: Profile; following: boolean; onFollow: () => void; onMessage: () => void }) {
+  return <article className="person-card card"><Avatar name={person.displayName} photo={person.photoURL} size="large" /><div className="person-info"><strong>{person.displayName}</strong><span>{person.bio || 'Here for the real-life stuff.'}</span></div><button className="message-person-button" onClick={onMessage} aria-label={'Message '+person.displayName}><MessageCircle size={15}/></button><button className={'follow-button ' + (following ? 'following' : '')} onClick={onFollow}>{following ? <><Check size={14} /> Following</> : <><Plus size={14} /> Follow</>}</button></article>;
 }
 function EventCard({ event, uid, onRsvp }: { event: EventItem; uid: string; onRsvp: (event: EventItem, going: boolean) => void }) {
   const going = (event.attendeeUids || []).includes(uid);
