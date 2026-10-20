@@ -164,7 +164,6 @@ export default function App() {
   const [eventPhotos, setEventPhotos] = useState<Record<string,EventPhoto[]>>({});
   const [uploadingAlbumFor, setUploadingAlbumFor] = useState('');
   const [postText, setPostText] = useState('');
-  const [postAudience, setPostAudience] = useState<'followers' | 'public'>('followers');
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState('');
   const [postLikes, setPostLikes] = useState<Record<string, { count: number; liked: boolean }>>({});
@@ -182,6 +181,17 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [toast, setToast] = useState('');
+  const followingIds = [...new Set([...following, ...acceptedFollowing])];
+
+  // Clear user-scoped data on account changes so private content never carries into another session.
+  useEffect(() => {
+    setPosts([]); setEvents([]); setPeople([]); setFollowing([]); setAcceptedFollowing([]);
+    setIncomingRequests([]); setOutgoingRequests([]); setNotices([]); setConversations([]);
+    setActiveConversationId(''); setChatMessages([]); setEventPhotos({}); setPostLikes({}); setPostComments({});
+    setProfileDetails(null); setProfilePagePosts([]); setProfilePageUnlocked(false); setProfileFollowers([]); setProfileFollowing([]);
+    setProfilePageUid(user?.uid || '');
+    if (!user) setTab('home');
+  }, [user?.uid]);
 
   useEffect(() => onAuthStateChanged(auth, async current => {
     setUser(current);
@@ -369,7 +379,6 @@ export default function App() {
 
   const invitedEvents = useMemo(() => events.filter(e => e.hostId !== user?.uid && e.invitedUids?.includes(user?.uid || '') && !e.attendeeUids?.includes(user?.uid || '')), [events, user]);
   const unread = notices.filter(n => !n.read).length;
-  const followingIds = [...new Set([...following, ...acceptedFollowing])];
   const filteredPeople = people.filter(p => p.displayName.toLowerCase().includes(peopleSearch.toLowerCase()));
   const followedProfiles = people.filter(p => followingIds.includes(p.uid));
 
@@ -403,7 +412,7 @@ export default function App() {
       }
       await addDoc(collection(db, 'posts'), {
         authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '',
-        text: postText.trim(), visibility: postAudience, audienceUids: [],
+        text: postText.trim(), visibility: 'followers', audienceUids: [],
         ...(mediaUrl ? { mediaUrl, mediaType } : {}), createdAt: serverTimestamp(),
       });
       setPostText(''); setMediaFile(null); setToast('Out there. Go live your life.'); setTimeout(() => setToast(''), 2800);
@@ -507,8 +516,7 @@ export default function App() {
     const pending = outgoingRequests.some(request => request.targetId === person.uid);
     try {
       if (alreadyFollowing) {
-        const existing = await getDoc(ref);
-        if (existing.exists()) await deleteDoc(ref);
+        if (acceptedFollowing.includes(person.uid)) await deleteDoc(ref);
         if (following.includes(person.uid)) await deleteDoc(doc(db, 'users', user.uid, 'following', person.uid));
         setToast('Unfollowed.');
       } else if (pending) {
@@ -634,11 +642,11 @@ export default function App() {
             <Avatar name={profile?.displayName || 'You'} photo={profile?.photoURL || undefined} size="large" />
             <div className="composer-main"><textarea value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening in your world?" maxLength={2000} rows={2} />
               {mediaPreview && <div className="media-preview">{mediaFile?.type.startsWith('video/') ? <video src={mediaPreview} controls /> : <img src={mediaPreview} alt="Selected upload preview" />}<button type="button" className="media-remove" onClick={() => setMediaFile(null)} aria-label="Remove media"><X size={15} /></button></div>}
-              <div className="composer-bottom"><div className="composer-tools"><label className="media-pick" title="Add a photo or video"><ImagePlus size={16} /><span>Photo / video</span><input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" onChange={e => setMediaFile(e.target.files?.[0] || null)} /></label><label className="audience-select"><Users size={14} /><select value={postAudience} onChange={e => setPostAudience(e.target.value as 'followers' | 'public')}><option value="followers">Your people</option><option value="public">Everyone in UP2</option></select><ChevronDown size={13} /></label></div><button className="button button-dark button-small" disabled={(!postText.trim() && !mediaFile) || saving}>{uploadingMedia ? 'Uploading…' : 'Share'} <ArrowUpRight size={15} /></button></div>
+              <div className="composer-bottom"><div className="composer-tools"><label className="media-pick" title="Add a photo or video"><ImagePlus size={16} /><span>Photo / video</span><input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" onChange={e => setMediaFile(e.target.files?.[0] || null)} /></label><span className="audience-select"><Users size={14} /> Accepted followers only</span></div><button className="button button-dark button-small" disabled={(!postText.trim() && !mediaFile) || saving}>{uploadingMedia ? 'Uploading…' : 'Share'} <ArrowUpRight size={15} /></button></div>
             </div>
           </form>
           <div className="section-label"><span>THE LATEST</span><span className="section-line" /><span className="muted">{posts.length} posts</span></div>
-          {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" id={`post-${post.id}`} key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · {post.visibility === 'public' ? 'Everyone' : 'Their people'}</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p>{post.mediaUrl && <div className="post-media">{post.mediaType === 'video' ? <video src={post.mediaUrl} controls playsInline preload="metadata" /> : <img src={post.mediaUrl} alt={`Photo shared by ${post.authorName}`} loading="lazy" />}</div>}<div className="post-footer"><button className={'post-action ' + (postLikes[post.id]?.liked ? 'post-action-liked' : '')} onClick={() => void toggleLike(post)} aria-label={postLikes[post.id]?.liked ? 'Unlike post' : 'Like post'}><Heart size={16} fill={postLikes[post.id]?.liked ? 'currentColor' : 'none'} /> <strong>{postLikes[post.id]?.count || 0}</strong> {postLikes[post.id]?.liked ? 'Liked' : 'Like'}</button><button className="post-action" onClick={() => setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] }))}><MessageCircle size={16} /> <strong>{postComments[post.id]?.length || 0}</strong> Comment</button><button className="post-action" onClick={() => void sharePost(post)}><Share2 size={15} /> Share</button></div>{openComments[post.id] && <div className="comments-panel"><div className="comments-list">{(postComments[post.id] || []).map(comment => <div className="comment-row" key={comment.id}><Avatar name={comment.authorName} photo={comment.authorPhoto} size="small" /><div className="comment-bubble"><strong>{comment.authorName}</strong><p>{comment.text}</p><small>{timeAgo(comment.createdAt)}</small></div>{comment.authorId === user.uid && <button className="comment-delete" onClick={() => void deleteComment(post, comment)} aria-label="Delete your comment"><Trash2 size={13} /></button>}</div>)}{(postComments[post.id] || []).length === 0 && <p className="comments-empty">Start the conversation.</p>}</div><form className="comment-form" onSubmit={e => void addComment(post, e)}><input value={commentDrafts[post.id] || ''} onChange={e => setCommentDrafts(prev => ({ ...prev, [post.id]: e.target.value }))} placeholder="Write a comment…" maxLength={500} aria-label="Write a comment" /><button type="submit" disabled={!(commentDrafts[post.id] || '').trim()} aria-label="Send comment"><Send size={16} /></button></form></div>}</article>)}</div>}
+          {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" id={`post-${post.id}`} key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · Accepted followers only</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p>{post.mediaUrl && <div className="post-media">{post.mediaType === 'video' ? <video src={post.mediaUrl} controls playsInline preload="metadata" /> : <img src={post.mediaUrl} alt={`Photo shared by ${post.authorName}`} loading="lazy" />}</div>}<div className="post-footer"><button className={'post-action ' + (postLikes[post.id]?.liked ? 'post-action-liked' : '')} onClick={() => void toggleLike(post)} aria-label={postLikes[post.id]?.liked ? 'Unlike post' : 'Like post'}><Heart size={16} fill={postLikes[post.id]?.liked ? 'currentColor' : 'none'} /> <strong>{postLikes[post.id]?.count || 0}</strong> {postLikes[post.id]?.liked ? 'Liked' : 'Like'}</button><button className="post-action" onClick={() => setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] }))}><MessageCircle size={16} /> <strong>{postComments[post.id]?.length || 0}</strong> Comment</button><button className="post-action" onClick={() => void sharePost(post)}><Share2 size={15} /> Share</button></div>{openComments[post.id] && <div className="comments-panel"><div className="comments-list">{(postComments[post.id] || []).map(comment => <div className="comment-row" key={comment.id}><Avatar name={comment.authorName} photo={comment.authorPhoto} size="small" /><div className="comment-bubble"><strong>{comment.authorName}</strong><p>{comment.text}</p><small>{timeAgo(comment.createdAt)}</small></div>{comment.authorId === user.uid && <button className="comment-delete" onClick={() => void deleteComment(post, comment)} aria-label="Delete your comment"><Trash2 size={13} /></button>}</div>)}{(postComments[post.id] || []).length === 0 && <p className="comments-empty">Start the conversation.</p>}</div><form className="comment-form" onSubmit={e => void addComment(post, e)}><input value={commentDrafts[post.id] || ''} onChange={e => setCommentDrafts(prev => ({ ...prev, [post.id]: e.target.value }))} placeholder="Write a comment…" maxLength={500} aria-label="Write a comment" /><button type="submit" disabled={!(commentDrafts[post.id] || '').trim()} aria-label="Send comment"><Send size={16} /></button></form></div>}</article>)}</div>}
           <div className="caught-up"><span className="caught-icon"><Check size={16} /></span><p><strong>That's you caught up.</strong><br /><span>Go make something happen.</span></p></div>
         </section>}
 
