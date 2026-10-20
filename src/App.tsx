@@ -23,7 +23,8 @@ type Notice = { id: string; recipientId: string; actorId: string; actorName: str
 type Conversation = { id:string; type:'direct'|'event'; members:string[]; memberNames?:Record<string,string>; eventId?:string; eventTitle?:string; title?:string; lastMessage?:string; lastSenderId?:string; updatedAt?:{toDate?:()=>Date} };
 type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
 type EventPhoto = { id:string; authorId:string; authorName:string; url:string; mediaType?:string; createdAt?:{toDate?:()=>Date} };
-type Tab = 'home' | 'events' | 'messages' | 'memories' | 'people' | 'invites';
+type FollowRequest = { id: string; requesterId: string; requesterName: string; requesterPhoto?: string; targetId: string; status: 'pending' | 'accepted' | 'declined'; createdAt?: { toDate?: () => Date } };
+type Tab = 'home' | 'events' | 'messages' | 'memories' | 'people' | 'invites' | 'profile';
 
 const timeAgo = (value?: { toDate?: () => Date }) => {
   const date = value?.toDate?.();
@@ -111,13 +112,11 @@ function AuthScreen() {
 async function ensureProfile(user: User) {
   const ref = doc(db, 'users', user.uid);
   const existing = await getDoc(ref);
-  if (!existing.exists()) {
-    await setDoc(ref, {
-      displayName: user.displayName || user.email?.split('@')[0] || 'New friend',
-      photoURL: user.photoURL || '', bio: '',
-      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-    });
-  }
+  const displayName = existing.exists() ? String(existing.data().displayName || user.displayName || user.email?.split('@')[0] || 'New friend') : (user.displayName || user.email?.split('@')[0] || 'New friend');
+  const photoURL = existing.exists() ? String(existing.data().photoURL || user.photoURL || '') : (user.photoURL || '');
+  if (!existing.exists()) await setDoc(ref, { displayName, photoURL, bio: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  // Minimal public directory is separate from private bio and profile details.
+  await setDoc(doc(db, 'directory', user.uid), { displayName, photoURL, updatedAt: serverTimestamp() }, { merge: true });
 }
 function authError(error: unknown) {
   const code = (error as { code?: string })?.code;
@@ -145,6 +144,18 @@ export default function App() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [people, setPeople] = useState<Profile[]>([]);
   const [following, setFollowing] = useState<string[]>([]);
+  const [acceptedFollowing, setAcceptedFollowing] = useState<string[]>([]);
+  const [incomingRequests, setIncomingRequests] = useState<FollowRequest[]>([]);
+  const [outgoingRequests, setOutgoingRequests] = useState<FollowRequest[]>([]);
+  const [profilePageUid, setProfilePageUid] = useState('');
+  const [profileDetails, setProfileDetails] = useState<Profile | null>(null);
+  const [profilePagePosts, setProfilePagePosts] = useState<Post[]>([]);
+  const [profilePageUnlocked, setProfilePageUnlocked] = useState(false);
+  const [profileBioDraft, setProfileBioDraft] = useState('');
+  const [profileNameDraft, setProfileNameDraft] = useState('');
+  const [profileSaveBusy, setProfileSaveBusy] = useState(false);
+  const [profileFollowers, setProfileFollowers] = useState<Profile[]>([]);
+  const [profileFollowing, setProfileFollowing] = useState<Profile[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
@@ -198,7 +209,17 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    return onSnapshot(collection(db, 'users', user.uid, 'following'), snap => setFollowing(snap.docs.map(d => d.id)));
+    return onSnapshot(collection(db, 'users', user.uid, 'following'), snap => setFollowing(snap.docs.map(d => d.id)), err => console.error('Legacy following:', err));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubs = [
+      onSnapshot(query(collection(db, 'followRequests'), where('requesterId', '==', user.uid), where('status', '==', 'accepted')), snap => setAcceptedFollowing(snap.docs.map(d => String(d.data().targetId))), err => console.error('Accepted following:', err)),
+      onSnapshot(query(collection(db, 'followRequests'), where('targetId', '==', user.uid), where('status', '==', 'pending')), snap => setIncomingRequests(snap.docs.map(d => ({ id: d.id, ...d.data() } as FollowRequest))), err => console.error('Incoming follow requests:', err)),
+      onSnapshot(query(collection(db, 'followRequests'), where('requesterId', '==', user.uid), where('status', '==', 'pending')), snap => setOutgoingRequests(snap.docs.map(d => ({ id: d.id, ...d.data() } as FollowRequest))), err => console.error('Outgoing follow requests:', err)),
+    ];
+    return () => unsubs.forEach(unsub => unsub());
   }, [user]);
 
   useEffect(() => {
@@ -231,13 +252,13 @@ export default function App() {
     unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', user.uid), orderBy('createdAt', 'desc'), limit(30)), snap => {
       snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
     }, err => console.error('Your posts:', err)));
-    following.slice(0, 20).forEach(uid => {
+    followingIds.slice(0, 20).forEach(uid => {
       unsubs.push(onSnapshot(query(collection(db, 'posts'), where('authorId', '==', uid), where('visibility', 'in', ['public', 'followers']), orderBy('createdAt', 'desc'), limit(20)), snap => {
         snap.docs.forEach(d => allPosts.set(d.id, { id: d.id, ...d.data() } as Post)); publish();
       }, err => console.error('Friend posts:', err)));
     });
     return () => unsubs.forEach(fn => fn());
-  }, [user, following.join('|')]);
+  }, [user, followingIds.join('|')]);
 
   useEffect(() => {
     const postId = new URLSearchParams(window.location.search).get('post');
@@ -284,10 +305,60 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    getDocs(query(collection(db, 'users'), limit(100))).then(snap => {
+    getDocs(query(collection(db, 'directory'), limit(100))).then(snap => {
       setPeople(snap.docs.filter(d => d.id !== user.uid).map(d => ({ uid: d.id, ...d.data() } as Profile)));
-    }).catch(err => console.error('People:', err));
+    }).catch(err => console.error('People directory:', err));
   }, [user]);
+
+  useEffect(() => {
+    if (!user || !profilePageUid) return;
+    const isOwn = profilePageUid === user.uid;
+    const directoryProfile = isOwn ? profile : (people.find(person => person.uid === profilePageUid) || null);
+    if (!isOwn && !followingIds.includes(profilePageUid)) {
+      setProfileDetails(directoryProfile);
+      setProfilePagePosts([]);
+      setProfilePageUnlocked(false);
+      return;
+    }
+    setProfilePageUnlocked(true);
+    const profileRef = doc(db, 'users', profilePageUid);
+    const unsubProfile = isOwn ? undefined : onSnapshot(profileRef, snap => {
+      if (snap.exists()) {
+        const value = { uid: profilePageUid, ...snap.data() } as Profile;
+        setProfileDetails(value);
+      }
+    }, err => { console.error('Private profile:', err); setProfilePageUnlocked(false); });
+    if (isOwn && profile) setProfileDetails(profile);
+    const unsubPosts = onSnapshot(query(collection(db, 'posts'), where('authorId', '==', profilePageUid), orderBy('createdAt', 'desc'), limit(60)), snap => {
+      setProfilePagePosts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Post)));
+    }, err => { console.error('Profile posts:', err); setProfilePagePosts([]); });
+    if (isOwn) {
+      setProfileNameDraft(profile?.displayName || '');
+      setProfileBioDraft(profile?.bio || '');
+    }
+    return () => { unsubProfile?.(); unsubPosts(); };
+  }, [user, profilePageUid, profile, people, followingIds.join('|')]);
+
+  useEffect(() => {
+    if (!user || !profilePageUid) return;
+    const isOwn = profilePageUid === user.uid;
+    const canSeeRelations = isOwn || followingIds.includes(profilePageUid);
+    if (!canSeeRelations) { setProfileFollowers([]); setProfileFollowing([]); return; }
+    const loadProfiles = async (ids: string[]) => Promise.all(ids.map(async uid => {
+      try {
+        const snap = await getDoc(doc(db, 'directory', uid));
+        return snap.exists() ? ({ uid, ...snap.data() } as Profile) : null;
+      } catch { return null; }
+    })).then(items => items.filter((item): item is Profile => Boolean(item)));
+    const unsubFollowers = onSnapshot(query(collection(db, 'followRequests'), where('targetId', '==', profilePageUid), where('status', '==', 'accepted')), async snap => {
+      setProfileFollowers(await loadProfiles(snap.docs.map(d => String(d.data().requesterId))));
+    }, err => console.error('Profile followers:', err));
+    const unsubFollowing = onSnapshot(query(collection(db, 'followRequests'), where('requesterId', '==', profilePageUid), where('status', '==', 'accepted')), async snap => {
+      const ids = [...new Set([...snap.docs.map(d => String(d.data().targetId)), ...(isOwn ? following : [])])];
+      setProfileFollowing(await loadProfiles(ids));
+    }, err => console.error('Profile following:', err));
+    return () => { unsubFollowers(); unsubFollowing(); };
+  }, [user, profilePageUid, followingIds.join('|')]);
 
   useEffect(() => {
     if (!user) return;
@@ -298,8 +369,9 @@ export default function App() {
 
   const invitedEvents = useMemo(() => events.filter(e => e.hostId !== user?.uid && e.invitedUids?.includes(user?.uid || '') && !e.attendeeUids?.includes(user?.uid || '')), [events, user]);
   const unread = notices.filter(n => !n.read).length;
+  const followingIds = [...new Set([...following, ...acceptedFollowing])];
   const filteredPeople = people.filter(p => p.displayName.toLowerCase().includes(peopleSearch.toLowerCase()));
-  const followedProfiles = people.filter(p => following.includes(p.uid));
+  const followedProfiles = people.filter(p => followingIds.includes(p.uid));
 
   async function publishPost(e: FormEvent) {
     e.preventDefault();
@@ -381,10 +453,20 @@ export default function App() {
   }
 
   async function startConversation(person: Profile) {
-    if (!user || !profile) return;
-    const members=[user.uid,person.uid].sort(); const id='dm_'+members.join('_'); const ref=doc(db,'conversations',id);
-    try { const existing=await getDoc(ref); if(!existing.exists()) await setDoc(ref,{type:'direct',members,memberNames:{[user.uid]:profile.displayName,[person.uid]:person.displayName},lastMessage:'',lastSenderId:'',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}); setActiveConversationId(id);setTab('messages'); }
-    catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}
+    if (!user || !profile || person.uid === user.uid) return;
+    const members = [user.uid, person.uid].sort();
+    const id = 'dm_' + members.join('_');
+    const ref = doc(db, 'conversations', id);
+    try {
+      const existing = await getDoc(ref);
+      if (existing.exists()) {
+        const data = existing.data() as Conversation;
+        if (data.type !== 'direct' || data.members.length !== 2 || !data.members.includes(user.uid) || !data.members.includes(person.uid)) throw new Error('This conversation has invalid participants. Please start a new conversation.');
+      } else {
+        await setDoc(ref, { type: 'direct', members, memberNames: { [user.uid]: profile.displayName, [person.uid]: person.displayName }, lastMessage: '', lastSenderId: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      }
+      setActiveConversationId(id); setTab('messages');
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
   }
 
   async function uploadEventPhoto(event: EventItem, file?: File) {
@@ -404,20 +486,69 @@ export default function App() {
   }
 
   async function sendMessage(e: FormEvent) {
-    e.preventDefault(); const text=messageDraft.trim(); if(!user||!profile||!activeConversationId||!text)return;
-    const conversation=conversations.find(c=>c.id===activeConversationId); if(!conversation||!conversation.members.includes(user.uid))return;
-    try { await addDoc(collection(db,'conversations',activeConversationId,'messages'),{senderId:user.uid,senderName:profile.displayName,text,createdAt:serverTimestamp()}); await updateDoc(doc(db,'conversations',activeConversationId),{lastMessage:text.slice(0,180),lastSenderId:user.uid,updatedAt:serverTimestamp()});setMessageDraft(''); }
-    catch(err){setToast(authError(err));setTimeout(()=>setToast(''),3500)}
+    e.preventDefault();
+    const text = messageDraft.trim();
+    if (!user || !profile || !activeConversationId || !text) return;
+    const conversation = conversations.find(c => c.id === activeConversationId);
+    if (!conversation || !conversation.members.includes(user.uid)) { setToast('That conversation is no longer available.'); setTimeout(() => setToast(''), 3000); return; }
+    if (conversation.type === 'direct' && conversation.members.length !== 2) { setToast('This direct message has invalid participants and was blocked.'); setTimeout(() => setToast(''), 3500); return; }
+    try {
+      await addDoc(collection(db, 'conversations', activeConversationId, 'messages'), { senderId: user.uid, senderName: profile.displayName, text, createdAt: serverTimestamp() });
+      await updateDoc(doc(db, 'conversations', activeConversationId), { lastMessage: text.slice(0, 180), lastSenderId: user.uid, updatedAt: serverTimestamp() });
+      setMessageDraft('');
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
   }
 
   async function followPerson(person: Profile) {
-    if (!user) return;
-    const ref = doc(db, 'users', user.uid, 'following', person.uid);
+    if (!user || !profile || person.uid === user.uid) return;
+    const id = `${person.uid}__${user.uid}`;
+    const ref = doc(db, 'followRequests', id);
+    const alreadyFollowing = followingIds.includes(person.uid);
+    const pending = outgoingRequests.some(request => request.targetId === person.uid);
     try {
-      if (following.includes(person.uid)) await deleteDoc(ref);
-      else await setDoc(ref, { createdAt: serverTimestamp() });
+      if (alreadyFollowing) {
+        const existing = await getDoc(ref);
+        if (existing.exists()) await deleteDoc(ref);
+        if (following.includes(person.uid)) await deleteDoc(doc(db, 'users', user.uid, 'following', person.uid));
+        setToast('Unfollowed.');
+      } else if (pending) {
+        await deleteDoc(ref); setToast('Follow request cancelled.');
+      } else {
+        const existing = await getDoc(ref);
+        const payload = { requesterId: user.uid, requesterName: profile.displayName, requesterPhoto: profile.photoURL || '', targetId: person.uid, status: 'pending', updatedAt: serverTimestamp() };
+        if (existing.exists()) await updateDoc(ref, { ...payload, createdAt: serverTimestamp() });
+        else await setDoc(ref, { ...payload, createdAt: serverTimestamp() });
+        setToast('Follow request sent.');
+      }
+      setTimeout(() => setToast(''), 2800);
     } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
   }
+
+  async function respondToFollowRequest(request: FollowRequest, status: 'accepted' | 'declined') {
+    if (!user || request.targetId !== user.uid || request.status !== 'pending') return;
+    try {
+      await updateDoc(doc(db, 'followRequests', request.id), { status, updatedAt: serverTimestamp() });
+      setToast(status === 'accepted' ? `You accepted ${request.requesterName}'s follow request.` : 'Follow request declined.');
+      setTimeout(() => setToast(''), 3000);
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+  }
+
+  async function saveProfile(e: FormEvent) {
+    e.preventDefault();
+    if (!user || !profile || profilePageUid !== user.uid) return;
+    const displayName = profileNameDraft.trim().slice(0, 60);
+    const bio = profileBioDraft.trim().slice(0, 160);
+    if (!displayName) { setToast('Please add a display name.'); return; }
+    setProfileSaveBusy(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { displayName, bio, updatedAt: serverTimestamp() });
+      await setDoc(doc(db, 'directory', user.uid), { displayName, photoURL: profile.photoURL || '', updatedAt: serverTimestamp() }, { merge: true });
+      setToast('Profile updated.'); setTimeout(() => setToast(''), 2500);
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
+    finally { setProfileSaveBusy(false); }
+  }
+
+  function openProfile(uid: string) { setProfilePageUid(uid); setTab('profile'); }
 
   async function createEvent(e: FormEvent) {
     e.preventDefault();
@@ -481,10 +612,11 @@ export default function App() {
         <NavButton active={tab === 'memories'} icon={<ImagePlus size={18} />} label="Memories" onClick={() => setTab('memories')} />
         <NavButton active={tab === 'invites'} icon={<Bell size={18} />} label="Invitations" count={unread + invitedEvents.length} onClick={() => setTab('invites')} />
         <NavButton active={tab === 'people'} icon={<Users size={18} />} label="Find your people" onClick={() => setTab('people')} />
+        <NavButton active={tab === 'profile'} icon={<Users size={18} />} label="Your profile" onClick={() => openProfile(user.uid)} />
       </nav>
       <div className="sidebar-bottom">
         <div className="sidebar-note"><div className="note-icon"><Heart size={16} /></div><p>Made for real life.</p><span>No algorithm. No rush.</span></div>
-        <button className="profile-chip" onClick={() => signOut(auth)}><Avatar name={profile?.displayName || user.displayName || 'You'} photo={profile?.photoURL || user.photoURL || undefined} /><span className="profile-chip-text"><strong>{profile?.displayName || user.displayName || 'Your profile'}</strong><small>Log out</small></span><LogOut size={16} /></button>
+        <button className="profile-chip" onClick={() => openProfile(user.uid)}><Avatar name={profile?.displayName || user.displayName || 'You'} photo={profile?.photoURL || user.photoURL || undefined} /><span className="profile-chip-text"><strong>{profile?.displayName || user.displayName || 'Your profile'}</strong><small>View profile</small></span><ArrowUpRight size={16} /></button><button className="logout-button" onClick={() => signOut(auth)}><LogOut size={15} /> Log out</button>
       </div>
     </aside>
 
@@ -520,16 +652,45 @@ export default function App() {
         {tab === 'memories' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">THE GOOD STUFF STAYS</span><h1>Your <em>memories.</em></h1><p>Your events, with their conversations and shared photos.</p></div></div><div className="memory-grid">{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).sort((a,b)=>new Date(b.startsAt).getTime()-new Date(a.startsAt).getTime()).map(e=><article className="memory-card card" key={e.id}><div className="memory-cover"><CalendarDays size={26}/><span>{new Date(e.startsAt).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})}</span></div><div className="memory-copy"><span className="eyebrow">{new Date(e.startsAt).getTime()<Date.now()?'FROM THE ARCHIVE':'COMING UP'}</span><h3>{e.title}</h3><p>{e.location||'A moment with your people'}</p><div className="album-photos">{(eventPhotos[e.id]||[]).map(photo=><a key={photo.id} href={photo.url} target="_blank" rel="noreferrer" className="album-photo" aria-label={'Open photo shared by '+photo.authorName}>{photo.mediaType==='video'?<video src={photo.url} muted preload="metadata"/>:<img src={photo.url} alt={'Shared by '+photo.authorName} loading="lazy"/>}</a>)}</div><div className="album-actions"><label className="button button-outline button-small album-upload">{uploadingAlbumFor===e.id?'Uploading…':'Add photos'} <ImagePlus size={14}/><input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" disabled={uploadingAlbumFor===e.id} onChange={event=>{void uploadEventPhoto(e,event.target.files?.[0]);event.currentTarget.value='';}}/></label><button className="button button-outline button-small" onClick={()=>{const c=conversations.find(c=>c.eventId===e.id);if(c){setActiveConversationId(c.id);setTab('messages')}else setToast('Event chat is not available for this event yet.')}}>Open chat <ArrowUpRight size={14}/></button></div></div></article>)}{events.filter(e=>(e.attendeeUids||[]).includes(user.uid)||e.hostId===user.uid).length===0&&<EmptyState icon={<ImagePlus size={21}/>} title="Your story starts here." body="Events you attend will collect here." action="Find a plan" onClick={()=>setTab('events')}/>}</div></section>}
 
         {tab === 'invites' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">YOU'RE ON THE LIST</span><h1>You're <em>invited.</em></h1><p>Good things start with someone thinking of you.</p></div></div>
-          <div className="section-label"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
+          {incomingRequests.length > 0 && <><div className="section-label"><span>FOLLOW REQUESTS</span><span className="section-line" /><span className="muted">{incomingRequests.length}</span></div><div className="request-list">{incomingRequests.map(request => <article className="request-row card" key={request.id}><Avatar name={request.requesterName} photo={request.requesterPhoto} /><div className="request-copy"><strong>{request.requesterName}</strong><span>wants to follow you</span></div><button className="button button-dark button-small" onClick={() => void respondToFollowRequest(request, 'accepted')}><Check size={14} /> Accept</button><button className="button button-outline button-small" onClick={() => void respondToFollowRequest(request, 'declined')}>Decline</button></article>)}</div></>}
+          {outgoingRequests.length > 0 && <><div className="section-label section-label-spaced"><span>REQUESTS SENT</span><span className="section-line" /></div><div className="request-list">{outgoingRequests.map(request => <article className="request-row card" key={request.id}><Avatar name={people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member'} /><div className="request-copy"><strong>{people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member'}</strong><span>Follow request pending</span></div><button className="button button-outline button-small" onClick={() => void followPerson({ uid: request.targetId, displayName: people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member' })}>Cancel</button></article>)}</div></>}
+          <div className="section-label section-label-spaced"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
           {invitedEvents.length === 0 ? <EmptyState icon={<Bell size={21} />} title="No invitations just yet." body="When a friend invites you to something, you'll find it here. You could always be the one to start a plan." action="Make a plan" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{invitedEvents.map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
           {notices.length > 0 && <><div className="section-label section-label-spaced"><span>NOTIFICATIONS</span><span className="section-line" /></div><div className="notice-list">{notices.map(notice => <button className={'notice-row ' + (!notice.read ? 'notice-unread' : '')} key={notice.id} onClick={() => { void markRead(notice); setTab('events'); }}><span className="notice-icon"><CalendarDays size={17} /></span><span><strong>{notice.actorName} invited you to {notice.eventTitle}</strong><small>{timeAgo(notice.createdAt)}</small></span>{!notice.read && <i />}</button>)}</div></>}
         </section>}
 
         {tab === 'people' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">GOOD PEOPLE, GOOD TIMES</span><h1>Find your <em>people.</em></h1><p>Follow the people you know. Their posts will find their way to you.</p></div></div>
           <div className="people-search"><Search size={17} /><input value={peopleSearch} onChange={e => setPeopleSearch(e.target.value)} placeholder="Search by name or email" /></div>
-          {followedProfiles.length > 0 && <><div className="section-label"><span>YOUR PEOPLE</span><span className="section-line" /><span className="muted">{followedProfiles.length}</span></div><div className="people-grid">{followedProfiles.map(person => <PersonCard key={person.uid} person={person} following onFollow={() => followPerson(person)} onMessage={() => void startConversation(person)} />)}</div></>}
+          {followedProfiles.length > 0 && <><div className="section-label"><span>YOUR PEOPLE</span><span className="section-line" /><span className="muted">{followedProfiles.length}</span></div><div className="people-grid">{followedProfiles.map(person => <PersonCard key={person.uid} person={person} following onProfile={() => openProfile(person.uid)} onFollow={() => followPerson(person)} onMessage={() => void startConversation(person)} />)}</div></>}
           <div className="section-label section-label-spaced"><span>MEET THE COMMUNITY</span><span className="section-line" /></div>
-          {filteredPeople.length === 0 ? <EmptyState icon={<Users size={21} />} title="No one by that name yet." body="Try another search, or invite a friend to join UP2." /> : <div className="people-grid">{filteredPeople.map(person => <PersonCard key={person.uid} person={person} following={following.includes(person.uid)} onFollow={() => followPerson(person)} onMessage={() => void startConversation(person)} />)}</div>}
+          {filteredPeople.length === 0 ? <EmptyState icon={<Users size={21} />} title="No one by that name yet." body="Try another search, or invite a friend to join UP2." /> : <div className="people-grid">{filteredPeople.map(person => <PersonCard key={person.uid} person={person} following={followingIds.includes(person.uid)} pending={outgoingRequests.some(request => request.targetId === person.uid)} onProfile={() => openProfile(person.uid)} onFollow={() => followPerson(person)} onMessage={() => void startConversation(person)} />)}</div>}
+        </section>}
+
+        {tab === 'profile' && <section className="page-section profile-page">
+          {(() => {
+            const isOwnProfile = profilePageUid === user.uid;
+            const publicProfile = isOwnProfile ? profile : (people.find(person => person.uid === profilePageUid) || null);
+            const displayedProfile = isOwnProfile ? profile : (profileDetails || publicProfile);
+            const isFollowing = followingIds.includes(profilePageUid);
+            const requestPending = outgoingRequests.some(request => request.targetId === profilePageUid);
+            return <>
+              <div className="profile-page-top"><button className="text-button" onClick={() => setTab('people')}>← Back to people</button><span className="eyebrow">YOUR UP2 PROFILE</span></div>
+              <article className="profile-header card">
+                <Avatar name={displayedProfile?.displayName || 'UP2 member'} photo={displayedProfile?.photoURL} size="large" />
+                <div className="profile-header-main"><h1>{displayedProfile?.displayName || 'UP2 member'}</h1>
+                  <div className="profile-stats"><span><strong>{isOwnProfile || profilePageUnlocked ? profilePagePosts.length : '—'}</strong> posts</span><span><strong>{isOwnProfile || profilePageUnlocked ? profileFollowers.length : '—'}</strong> followers</span><span><strong>{isOwnProfile || profilePageUnlocked ? profileFollowing.length : '—'}</strong> following</span></div>
+                  {isOwnProfile ? <p className="profile-bio">{profile?.bio || 'Add a little bio so your people know it’s you.'}</p> : profilePageUnlocked ? <p className="profile-bio">{profileDetails?.bio || 'No bio yet.'}</p> : <p className="profile-bio private-copy">🔒 This account is private. Bio and posts are visible only after your follow request is accepted.</p>}
+                </div>
+                {isOwnProfile ? <span className="private-pill"><span /> PRIVATE ACCOUNT</span> : <div className="profile-actions"><button className={'button button-small ' + (isFollowing ? 'button-outline' : 'button-dark')} onClick={() => { const person = publicProfile || { uid: profilePageUid, displayName: displayedProfile?.displayName || 'UP2 member', photoURL: displayedProfile?.photoURL }; void followPerson(person); }}>{isFollowing ? 'Following · Unfollow' : requestPending ? 'Requested · Cancel' : 'Follow'}</button>{profilePageUnlocked && displayedProfile && <button className="button button-outline button-small" onClick={() => void startConversation(displayedProfile)}><MessageCircle size={14} /> Message</button>}</div>}
+              </article>
+              {isOwnProfile && <form className="profile-edit card" onSubmit={saveProfile}><div><span className="eyebrow">MAKE IT YOURS</span><h2>Edit profile</h2><p className="muted">Your account is private. Only accepted followers can see your bio and posts.</p></div><label>Display name<input value={profileNameDraft} onChange={e => setProfileNameDraft(e.target.value)} maxLength={60} required /></label><label>Bio <span className="muted">({profileBioDraft.length}/160)</span><textarea value={profileBioDraft} onChange={e => setProfileBioDraft(e.target.value)} maxLength={160} rows={3} placeholder="A little about you…" /></label><button className="button button-dark button-small" disabled={profileSaveBusy}>{profileSaveBusy ? 'Saving…' : 'Save profile'} <Check size={14} /></button></form>}
+              {!isOwnProfile && !profilePageUnlocked ? <div className="profile-locked card"><span className="lock-symbol">🔒</span><h2>This account is private</h2><p>Send a follow request. Once it’s accepted, you’ll be able to see their bio, posts, followers and following.</p><button className="button button-dark" onClick={() => { const person = publicProfile || { uid: profilePageUid, displayName: displayedProfile?.displayName || 'UP2 member' }; void followPerson(person); }}>{requestPending ? 'Cancel follow request' : 'Request to follow'}</button></div> : <>
+                <div className="profile-section-heading"><span className="eyebrow">POSTS</span><span className="section-line" /><span className="muted">{profilePagePosts.length}</span></div>
+                {profilePagePosts.length === 0 ? <EmptyState icon={<ImagePlus size={21} />} title="No posts yet." body={isOwnProfile ? "Your posts will appear here." : "This person hasn't shared anything yet."} /> : <div className="profile-post-grid">{profilePagePosts.map(post => <button className="profile-post-tile" key={post.id} onClick={() => { setTab('home'); setPosts(current => current.some(item => item.id === post.id) ? current : [post, ...current]); setTimeout(() => document.getElementById('post-' + post.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100); }} aria-label={'Open post by ' + post.authorName}>{post.mediaUrl ? (post.mediaType === 'video' ? <video src={post.mediaUrl} muted preload="metadata" /> : <img src={post.mediaUrl} alt="" loading="lazy" />) : <span>{post.text}</span>}<i><Heart size={14} /> {postLikes[post.id]?.count || 0}</i></button>)}</div>}
+                <div className="profile-relations"><section><div className="profile-section-heading"><span className="eyebrow">FOLLOWERS</span><span className="section-line" /><span className="muted">{profileFollowers.length}</span></div>{profileFollowers.length ? profileFollowers.map(person => <button className="relation-row" key={person.uid} onClick={() => openProfile(person.uid)}><Avatar name={person.displayName} photo={person.photoURL} size="small" /><span>{person.displayName}</span><ArrowUpRight size={14} /></button>) : <p className="muted">No followers to show yet.</p>}</section><section><div className="profile-section-heading"><span className="eyebrow">FOLLOWING</span><span className="section-line" /><span className="muted">{profileFollowing.length}</span></div>{profileFollowing.length ? profileFollowing.map(person => <button className="relation-row" key={person.uid} onClick={() => openProfile(person.uid)}><Avatar name={person.displayName} photo={person.photoURL} size="small" /><span>{person.displayName}</span><ArrowUpRight size={14} /></button>) : <p className="muted">Not following anyone yet.</p>}</section></div>
+              </>}
+            </>;
+          })()}
         </section>}
       </div>
       <footer className="site-footer"><span>UP2 © 2026</span><span>YOUR PEOPLE. YOUR PLANS. YOUR LIFE.</span><button onClick={() => setToast('Privacy and community guidelines are being prepared for the beta launch.')}>Community & privacy</button></footer>
@@ -570,8 +731,8 @@ function NavButton({ active, icon, label, count, onClick }: { active: boolean; i
 function EmptyState({ icon, title, body, action, onClick }: { icon: React.ReactNode; title: string; body: string; action?: string; onClick?: () => void }) {
   return <div className="empty-state"><span className="empty-icon">{icon}</span><h3>{title}</h3><p>{body}</p>{action && <button className="button button-outline" onClick={onClick}>{action} <ArrowUpRight size={15} /></button>}</div>;
 }
-function PersonCard({ person, following, onFollow, onMessage }: { person: Profile; following: boolean; onFollow: () => void; onMessage: () => void }) {
-  return <article className="person-card card"><Avatar name={person.displayName} photo={person.photoURL} size="large" /><div className="person-info"><strong>{person.displayName}</strong><span>{person.bio || 'Here for the real-life stuff.'}</span></div><button className="message-person-button" onClick={onMessage} aria-label={'Message '+person.displayName}><MessageCircle size={15}/></button><button className={'follow-button ' + (following ? 'following' : '')} onClick={onFollow}>{following ? <><Check size={14} /> Following</> : <><Plus size={14} /> Follow</>}</button></article>;
+function PersonCard({ person, following, pending = false, onProfile, onFollow, onMessage }: { person: Profile; following: boolean; pending?: boolean; onProfile: () => void; onFollow: () => void; onMessage: () => void }) {
+  return <article className="person-card card"><button className="person-open-profile" onClick={onProfile} aria-label={'View '+person.displayName+' profile'}><Avatar name={person.displayName} photo={person.photoURL} size="large" /></button><button className="person-info person-info-button" onClick={onProfile}><strong>{person.displayName}</strong><span>Private account</span></button><button className="message-person-button" onClick={onMessage} aria-label={'Message '+person.displayName}><MessageCircle size={15}/></button><button className={'follow-button ' + (following ? 'following' : '')} onClick={onFollow}>{following ? <><Check size={14} /> Following</> : pending ? 'Requested' : <><Plus size={14} /> Follow</>}</button></article>;
 }
 function EventCard({ event, uid, onRsvp }: { event: EventItem; uid: string; onRsvp: (event: EventItem, going: boolean) => void }) {
   const going = (event.attendeeUids || []).includes(uid);
