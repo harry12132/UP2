@@ -19,7 +19,7 @@ type Profile = { uid: string; displayName: string; photoURL?: string; bio?: stri
 type Post = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; visibility: string; mediaUrl?: string; mediaType?: string; createdAt?: { toDate?: () => Date } };
 type CommentItem = { id: string; authorId: string; authorName: string; authorPhoto?: string; text: string; createdAt?: { toDate?: () => Date } };
 type EventItem = { id: string; hostId: string; hostName: string; title: string; description?: string; location?: string; startsAt: string; visibility: 'public' | 'selected'; invitedUids: string[]; attendeeUids: string[]; createdAt?: { toDate?: () => Date } };
-type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId: string; eventTitle: string; createdAt?: { toDate?: () => Date }; read?: boolean };
+type Notice = { id: string; recipientId: string; actorId: string; actorName: string; type: string; eventId?: string; eventTitle?: string; postId?: string; postText?: string; createdAt?: { toDate?: () => Date }; read?: boolean };
 type Conversation = { id:string; type:'direct'|'event'; members:string[]; memberNames?:Record<string,string>; eventId?:string; eventTitle?:string; title?:string; lastMessage?:string; lastSenderId?:string; updatedAt?:{toDate?:()=>Date} };
 type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
 type EventPhoto = { id:string; authorId:string; authorName:string; url:string; mediaType?:string; createdAt?:{toDate?:()=>Date} };
@@ -464,7 +464,13 @@ export default function App() {
     const likeRef = doc(db, 'posts', post.id, 'likes', user.uid);
     try {
       if (postLikes[post.id]?.liked) await deleteDoc(likeRef);
-      else await setDoc(likeRef, { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Someone', createdAt: serverTimestamp() });
+      else {
+        await setDoc(likeRef, { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Someone', createdAt: serverTimestamp() });
+        if (post.authorId !== user.uid) await addDoc(collection(db, 'notifications'), {
+          recipientId: post.authorId, actorId: user.uid, actorName: profile?.displayName || user.displayName || 'Someone',
+          type: 'post_like', postId: post.id, postText: post.text.slice(0, 100), read: false, createdAt: serverTimestamp(),
+        });
+      }
     } catch (err) { console.error('Toggle post like failed:', err); setToast(authError(err)); setTimeout(() => setToast(''), 5000); }
   }
 
@@ -476,6 +482,10 @@ export default function App() {
     try {
       await addDoc(collection(db, 'posts', post.id, 'comments'), {
         authorId: user.uid, authorName: profile.displayName, authorPhoto: profile.photoURL || '', text, createdAt: serverTimestamp(),
+      });
+      if (post.authorId !== user.uid) await addDoc(collection(db, 'notifications'), {
+        recipientId: post.authorId, actorId: user.uid, actorName: profile.displayName,
+        type: 'post_comment', postId: post.id, postText: text.slice(0, 100), read: false, createdAt: serverTimestamp(),
       });
       setCommentDrafts(prev => ({ ...prev, [post.id]: '' }));
     } catch (err) { console.error('Add post comment failed:', err); setToast(authError(err)); setTimeout(() => setToast(''), 5000); }
@@ -725,7 +735,7 @@ export default function App() {
           {outgoingRequests.length > 0 && <><div className="section-label section-label-spaced"><span>REQUESTS SENT</span><span className="section-line" /></div><div className="request-list">{outgoingRequests.map(request => <article className="request-row card" key={request.id}><Avatar name={people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member'} /><div className="request-copy"><strong>{people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member'}</strong><span>Follow request pending</span></div><button className="button button-outline button-small" onClick={() => void followPerson({ uid: request.targetId, displayName: people.find(person => person.uid === request.targetId)?.displayName || 'UP2 member' })}>Cancel</button></article>)}</div></>}
           <div className="section-label section-label-spaced"><span>EVENT INVITATIONS</span><span className="section-line" /></div>
           {invitedEvents.length === 0 ? <EmptyState icon={<Bell size={21} />} title="No invitations just yet." body="When a friend invites you to something, you'll find it here. You could always be the one to start a plan." action="Make a plan" onClick={() => setEventOpen(true)} /> : <div className="events-grid">{invitedEvents.map(event => <EventCard key={event.id} event={event} uid={user.uid} onRsvp={rsvp} />)}</div>}
-          {notices.length > 0 && <><div className="section-label section-label-spaced"><span>NOTIFICATIONS</span><span className="section-line" /></div><div className="notice-list">{notices.map(notice => <button className={'notice-row ' + (!notice.read ? 'notice-unread' : '')} key={notice.id} onClick={() => { void markRead(notice); setTab('events'); }}><span className="notice-icon"><CalendarDays size={17} /></span><span><strong>{notice.actorName} invited you to {notice.eventTitle}</strong><small>{timeAgo(notice.createdAt)}</small></span>{!notice.read && <i />}</button>)}</div></>}
+          {notices.length > 0 && <><div className="section-label section-label-spaced"><span>NOTIFICATIONS</span><span className="section-line" /></div><div className="notice-list">{notices.map(notice => <button className={'notice-row ' + (!notice.read ? 'notice-unread' : '')} key={notice.id} onClick={() => { void markRead(notice); if (notice.type === 'post_like' || notice.type === 'post_comment') { setTab('home'); if (notice.postId) window.setTimeout(() => document.getElementById('post-' + notice.postId)?.scrollIntoView({behavior:'smooth',block:'center'}), 100); } else setTab('events'); }}><span className="notice-icon">{notice.type === 'event_invite' ? <CalendarDays size={17} /> : notice.type === 'post_like' ? <Heart size={17} /> : <MessageCircle size={17} />}</span><span><strong>{notice.type === 'event_invite' ? notice.actorName + ' invited you to ' + (notice.eventTitle || 'an event') : notice.type === 'post_like' ? notice.actorName + ' liked your post' : notice.actorName + ' commented on your post'}</strong>{notice.postText && <small>{notice.postText}</small>}<small>{timeAgo(notice.createdAt)}</small></span>{!notice.read && <i />}</button>)}</div></>}
         </section>}
 
         {tab === 'people' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">GOOD PEOPLE, GOOD TIMES</span><h1>Find your <em>people.</em></h1><p>Follow the people you know. Their posts will find their way to you.</p></div></div>
