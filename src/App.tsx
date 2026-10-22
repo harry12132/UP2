@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import {
   ArrowUpRight, Bell, CalendarDays, Check, ChevronDown, Clock3, Compass,
-  Clapperboard, Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
+  Bookmark, Clapperboard, Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
   ImagePlus, Share2, Send, Trash2,
 } from 'lucide-react';
 import { auth, db, googleProvider } from './firebase';
@@ -24,7 +24,7 @@ type Conversation = { id:string; type:'direct'|'event'; members:string[]; member
 type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
 type EventPhoto = { id:string; authorId:string; authorName:string; url:string; mediaType?:string; createdAt?:{toDate?:()=>Date} };
 type FollowRequest = { id: string; requesterId: string; requesterName: string; requesterPhoto?: string; targetId: string; status: 'pending' | 'accepted' | 'declined'; createdAt?: { toDate?: () => Date } };
-type Tab = 'home' | 'reels' | 'events' | 'messages' | 'memories' | 'people' | 'invites' | 'profile';
+type Tab = 'home' | 'reels' | 'events' | 'messages' | 'memories' | 'people' | 'invites' | 'saved' | 'profile';
 
 const timeAgo = (value?: { toDate?: () => Date }) => {
   const date = value?.toDate?.();
@@ -141,6 +141,8 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [tab, setTab] = useState<Tab>('home');
   const [posts, setPosts] = useState<Post[]>([]);
+  const [savedPostIds, setSavedPostIds] = useState<string[]>([]);
+  const [savedPosts, setSavedPosts] = useState<Post[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [people, setPeople] = useState<Profile[]>([]);
   const [acceptedFollowing, setAcceptedFollowing] = useState<string[]>([]);
@@ -215,6 +217,16 @@ export default function App() {
     return onSnapshot(doc(db, 'users', user.uid), snap => {
       if (snap.exists()) setProfile({ uid: user.uid, ...snap.data() } as Profile);
     });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) { setSavedPostIds([]); setSavedPosts([]); return; }
+    return onSnapshot(collection(db, 'users', user.uid, 'savedPosts'), async snap => {
+      const ids = snap.docs.map(d => d.id);
+      setSavedPostIds(ids);
+      const loaded = await Promise.all(ids.map(id => getDoc(doc(db, 'posts', id)).catch(() => null)));
+      setSavedPosts(loaded.filter((item): item is NonNullable<typeof item> => Boolean(item?.exists())).map(item => ({ id: item.id, ...item.data() } as Post)));
+    }, err => console.error('Saved posts:', err));
   }, [user]);
 
   useEffect(() => {
@@ -430,6 +442,21 @@ export default function App() {
       setPostText(''); setMediaFile(null); setToast('Out there. Go live your life.'); setTimeout(() => setToast(''), 2800);
     } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 4000); }
     finally { setSaving(false); setUploadingMedia(false); }
+  }
+
+  async function toggleSave(post: Post) {
+    if (!user) return;
+    const ref = doc(db, 'users', user.uid, 'savedPosts', post.id);
+    try {
+      if (savedPostIds.includes(post.id)) {
+        await deleteDoc(ref);
+        setToast('Removed from saved posts.');
+      } else {
+        await setDoc(ref, { postId: post.id, createdAt: serverTimestamp() });
+        setToast('Post saved.');
+      }
+      setTimeout(() => setToast(''), 2200);
+    } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
   }
 
   async function toggleLike(post: Post) {
