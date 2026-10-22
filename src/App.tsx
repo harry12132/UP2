@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import {
   ArrowUpRight, Bell, CalendarDays, Check, ChevronDown, Clock3, Compass,
-  Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
+  Clapperboard, Heart, LogOut, MapPin, MessageCircle, Plus, Search, Sparkles, Users, X,
   ImagePlus, Share2, Send, Trash2,
 } from 'lucide-react';
 import { auth, db, googleProvider } from './firebase';
@@ -24,7 +24,7 @@ type Conversation = { id:string; type:'direct'|'event'; members:string[]; member
 type ChatMessage = { id:string; senderId:string; senderName:string; text:string; createdAt?:{toDate?:()=>Date} };
 type EventPhoto = { id:string; authorId:string; authorName:string; url:string; mediaType?:string; createdAt?:{toDate?:()=>Date} };
 type FollowRequest = { id: string; requesterId: string; requesterName: string; requesterPhoto?: string; targetId: string; status: 'pending' | 'accepted' | 'declined'; createdAt?: { toDate?: () => Date } };
-type Tab = 'home' | 'events' | 'messages' | 'memories' | 'people' | 'invites' | 'profile';
+type Tab = 'home' | 'reels' | 'events' | 'messages' | 'memories' | 'people' | 'invites' | 'profile';
 
 const timeAgo = (value?: { toDate?: () => Date }) => {
   const date = value?.toDate?.();
@@ -622,12 +622,13 @@ export default function App() {
       <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark">u<span>2</span></span><span>UP2</span></button>
       <div className="sidebar-caption">YOUR CORNER</div>
       <nav className="main-nav">
-        <NavButton active={tab === 'home'} icon={<Sparkles size={18} />} label="Your feed" onClick={() => setTab('home')} />
+        <NavButton active={tab === 'home'} icon={<Sparkles size={18} />} label="Home" onClick={() => setTab('home')} />
+        <NavButton active={tab === 'reels'} icon={<Clapperboard size={18} />} label="Reels" onClick={() => setTab('reels')} />
         <NavButton active={tab === 'events'} icon={<CalendarDays size={18} />} label="Plans" onClick={() => setTab('events')} />
         <NavButton active={tab === 'messages'} icon={<MessageCircle size={18} />} label="Messages" count={conversations.filter(c=>c.lastSenderId&&c.lastSenderId!==user.uid).length} onClick={() => setTab('messages')} />
         <NavButton active={tab === 'memories'} icon={<ImagePlus size={18} />} label="Memories" onClick={() => setTab('memories')} />
-        <NavButton active={tab === 'invites'} icon={<Bell size={18} />} label="Invitations" count={unread + invitedEvents.length} onClick={() => setTab('invites')} />
-        <NavButton active={tab === 'people'} icon={<Users size={18} />} label="Find your people" onClick={() => setTab('people')} />
+        <NavButton active={tab === 'invites'} icon={<Bell size={18} />} label="Notifications" count={unread + invitedEvents.length} onClick={() => setTab('invites')} />
+        <NavButton active={tab === 'people'} icon={<Search size={18} />} label="Explore" onClick={() => setTab('people')} />
         <NavButton active={tab === 'profile'} icon={<Users size={18} />} label="Your profile" onClick={() => openProfile(user.uid)} />
       </nav>
       <div className="sidebar-bottom">
@@ -657,6 +658,8 @@ export default function App() {
           {posts.length === 0 ? <EmptyState icon={<MessageCircle size={21} />} title="A little quiet around here." body="Follow a few people or share the first update. Your feed stays in time order, always." action="Find your people" onClick={() => setTab('people')} /> : <div className="post-list">{posts.map(post => <article className="post-card card" id={`post-${post.id}`} key={post.id}><div className="post-head"><Avatar name={post.authorName} photo={post.authorPhoto} /><div className="post-author"><strong>{post.authorName}{post.authorId === user.uid && <span className="you-tag">YOU</span>}</strong><span>{timeAgo(post.createdAt)} · Accepted followers only</span></div><span className="post-dot">· · ·</span></div><p className="post-text">{post.text}</p>{post.mediaUrl && <div className="post-media">{post.mediaType === 'video' ? <video src={post.mediaUrl} controls playsInline preload="metadata" /> : <img src={post.mediaUrl} alt={`Photo shared by ${post.authorName}`} loading="lazy" />}</div>}<div className="post-footer"><button className={'post-action ' + (postLikes[post.id]?.liked ? 'post-action-liked' : '')} onClick={() => void toggleLike(post)} aria-label={postLikes[post.id]?.liked ? 'Unlike post' : 'Like post'}><Heart size={16} fill={postLikes[post.id]?.liked ? 'currentColor' : 'none'} /> <strong>{postLikes[post.id]?.count || 0}</strong> {postLikes[post.id]?.liked ? 'Liked' : 'Like'}</button><button className="post-action" onClick={() => setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] }))}><MessageCircle size={16} /> <strong>{postComments[post.id]?.length || 0}</strong> Comment</button><button className="post-action" onClick={() => void sharePost(post)}><Share2 size={15} /> Share</button></div>{openComments[post.id] && <div className="comments-panel"><div className="comments-list">{(postComments[post.id] || []).map(comment => <div className="comment-row" key={comment.id}><Avatar name={comment.authorName} photo={comment.authorPhoto} size="small" /><div className="comment-bubble"><strong>{comment.authorName}</strong><p>{comment.text}</p><small>{timeAgo(comment.createdAt)}</small></div>{comment.authorId === user.uid && <button className="comment-delete" onClick={() => void deleteComment(post, comment)} aria-label="Delete your comment"><Trash2 size={13} /></button>}</div>)}{(postComments[post.id] || []).length === 0 && <p className="comments-empty">Start the conversation.</p>}</div><form className="comment-form" onSubmit={e => void addComment(post, e)}><input value={commentDrafts[post.id] || ''} onChange={e => setCommentDrafts(prev => ({ ...prev, [post.id]: e.target.value }))} placeholder="Write a comment…" maxLength={500} aria-label="Write a comment" /><button type="submit" disabled={!(commentDrafts[post.id] || '').trim()} aria-label="Send comment"><Send size={16} /></button></form></div>}</article>)}</div>}
           <div className="caught-up"><span className="caught-icon"><Check size={16} /></span><p><strong>That's you caught up.</strong><br /><span>Go make something happen.</span></p></div>
         </section>}
+
+        {tab === 'reels' && <section className="page-section reels-page"><div className="page-heading"><div><span className="eyebrow">SHORT VIDEOS FROM YOUR PEOPLE</span><h1>Reels.</h1><p>Video posts from accounts you follow. Private means private.</p></div></div>{posts.filter(post => post.mediaType === 'video' && post.mediaUrl).length === 0 ? <EmptyState icon={<Clapperboard size={21} />} title="No reels yet." body="When people you follow share videos, they'll appear here." action="Explore people" onClick={() => setTab('people')} /> : <div className="reels-grid">{posts.filter(post => post.mediaType === 'video' && post.mediaUrl).map(post => <article className="reel-card" key={post.id}><video src={post.mediaUrl} controls playsInline preload="metadata" /><div className="reel-caption"><strong>{post.authorName}</strong>{post.text && <p>{post.text}</p>}<button className={'post-action ' + (postLikes[post.id]?.liked ? 'post-action-liked' : '')} onClick={() => void toggleLike(post)}><Heart size={18} fill={postLikes[post.id]?.liked ? 'currentColor' : 'none'} /> {postLikes[post.id]?.count || 0}</button><button className="post-action" onClick={() => { setTab('home'); setOpenComments(prev => ({...prev,[post.id]:true})); window.setTimeout(() => document.getElementById('post-'+post.id)?.scrollIntoView({behavior:'smooth',block:'center'}),100); }}><MessageCircle size={18} /> Comment</button></div></article>)}</div>}</section>}
 
         {tab === 'events' && <section className="page-section"><div className="page-heading"><div><span className="eyebrow">GOOD THINGS HAPPEN OFFLINE</span><h1>Make <em>plans.</em></h1><p>Find a reason to get everyone in the same place.</p></div><button className="button button-dark" onClick={() => setEventOpen(true)}><Plus size={16} /> Create an event</button></div>
           <div className="event-tabs"><span className="active">Coming up</span><span>Public events</span><span>Your plans</span></div>
@@ -713,11 +716,11 @@ export default function App() {
     </main>
 
     <nav className="mobile-nav">
-      <NavButton active={tab === 'home'} icon={<Sparkles size={19} />} label="Feed" onClick={() => setTab('home')} />
-      <NavButton active={tab === 'events'} icon={<CalendarDays size={19} />} label="Plans" onClick={() => setTab('events')} />
+      <NavButton active={tab === 'home'} icon={<Sparkles size={19} />} label="Home" onClick={() => setTab('home')} />
+      <NavButton active={tab === 'reels'} icon={<Clapperboard size={19} />} label="Reels" onClick={() => setTab('reels')} />
       <NavButton active={tab === 'messages'} icon={<MessageCircle size={19} />} label="Chats" onClick={() => setTab('messages')} />
       <button className="mobile-create" onClick={() => setEventOpen(true)} aria-label="Create event"><Plus size={22} /></button>
-      <NavButton active={tab === 'invites'} icon={<Bell size={19} />} label="Invites" count={unread} onClick={() => setTab('invites')} />
+      <NavButton active={tab === 'invites'} icon={<Bell size={19} />} label="Alerts" count={unread} onClick={() => setTab('invites')} />
       <NavButton active={tab === 'people'} icon={<Users size={19} />} label="People" onClick={() => setTab('people')} />
     </nav>
 
