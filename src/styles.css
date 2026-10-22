@@ -222,3 +222,9 @@ body{background:#fff;color:#262626}
 .reel-caption .post-action-liked{color:#ff5a68}
 @media(max-width:760px){.reels-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.reel-card{border-radius:6px}.reel-caption{padding:9px;gap:7px}}
 @media(max-width:430px){.reels-grid{grid-template-columns:1fr;gap:12px}.reel-card video{max-height:none}}
+
+.profile-avatar-upload{display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;flex-shrink:0}
+.profile-avatar-upload .avatar{width:96px;height:96px;font-size:28px}
+.profile-avatar-upload>span:not(.avatar){font-size:11px;font-weight:600;color:#0095f6}
+.profile-avatar-upload input{display:none}
+@media(max-width:640px){.profile-avatar-upload .avatar{width:78px;height:78px}}
