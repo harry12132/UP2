@@ -187,7 +187,7 @@ export default function App() {
 
   // Clear user-scoped data on account changes so private content never carries into another session.
   useEffect(() => {
-    setPosts([]); setEvents([]); setPeople([]); setAcceptedFollowing([]);
+    setPosts([]); setSavedPostIds([]); setSavedPosts([]); setEvents([]); setPeople([]); setAcceptedFollowing([]);
     setIncomingRequests([]); setOutgoingRequests([]); setNotices([]); setConversations([]);
     setActiveConversationId(''); setChatMessages([]); setEventPhotos({}); setPostLikes({}); setPostComments({});
     setProfileDetails(null); setProfilePagePosts([]); setProfilePageUnlocked(false); setProfileFollowers([]); setProfileFollowing([]);
