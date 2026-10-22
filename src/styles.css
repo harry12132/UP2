@@ -209,3 +209,16 @@ body{background:#fff;color:#262626}
   .profile-post-grid{gap:2px}
   .messenger-layout{border-radius:0}
 }
+
+
+/* Video feed */
+.reels-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.reel-card{position:relative;overflow:hidden;background:#111;border-radius:10px;min-width:0;color:#fff}
+.reel-card video{display:block;width:100%;aspect-ratio:9/16;max-height:620px;object-fit:cover;background:#111}
+.reel-caption{padding:12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.reel-caption>strong{font-size:13px;width:100%}
+.reel-caption p{font-size:13px;line-height:1.45;margin:0;width:100%;overflow-wrap:anywhere}
+.reel-caption .post-action{display:inline-flex;align-items:center;gap:6px;background:transparent;color:#fff;border:0;padding:3px;font-size:12px}
+.reel-caption .post-action-liked{color:#ff5a68}
+@media(max-width:760px){.reels-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.reel-card{border-radius:6px}.reel-caption{padding:9px;gap:7px}}
+@media(max-width:430px){.reels-grid{grid-template-columns:1fr;gap:12px}.reel-card video{max-height:none}}
