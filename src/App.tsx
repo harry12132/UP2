@@ -557,7 +557,7 @@ export default function App() {
     setProfilePhotoBusy(true);
     try {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const path = \`avatars/\${user.uid}/\${Date.now()}_\${safeName}\`;
+      const path = 'avatars/' + user.uid + '/' + Date.now() + '_' + safeName;
       const { error: uploadError } = await supabase.storage.from('up2-media').upload(path, file, { contentType: file.type, upsert: false });
       if (uploadError) throw uploadError;
       const photoURL = supabase.storage.from('up2-media').getPublicUrl(path).data.publicUrl;
