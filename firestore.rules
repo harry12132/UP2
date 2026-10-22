@@ -49,6 +49,16 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'bio', 'createdAt', 'updatedAt']);
       allow delete: if false;
 
+      match /savedPosts/{postId} {
+        allow read: if isSelf(uid);
+        allow create: if isSelf(uid)
+          && request.resource.data.keys().hasOnly(['postId', 'createdAt'])
+          && request.resource.data.postId == postId
+          && canReadPost(postId);
+        allow delete: if isSelf(uid);
+        allow update: if false;
+      }
+
       match /following/{targetUid} {
         allow read: if isSelf(uid);
         allow create: if false;
