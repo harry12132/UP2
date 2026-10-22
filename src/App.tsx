@@ -153,6 +153,7 @@ export default function App() {
   const [profileBioDraft, setProfileBioDraft] = useState('');
   const [profileNameDraft, setProfileNameDraft] = useState('');
   const [profileSaveBusy, setProfileSaveBusy] = useState(false);
+  const [profilePhotoBusy, setProfilePhotoBusy] = useState(false);
   const [profileFollowers, setProfileFollowers] = useState<Profile[]>([]);
   const [profileFollowing, setProfileFollowing] = useState<Profile[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
@@ -549,6 +550,25 @@ export default function App() {
     } catch (err) { setToast(authError(err)); setTimeout(() => setToast(''), 3500); }
   }
 
+  async function uploadProfilePhoto(file?: File) {
+    if (!user || !profile || !file) return;
+    if (!file.type.startsWith('image/')) { setToast('Choose an image for your profile photo.'); return; }
+    if (file.size > 10 * 1024 * 1024) { setToast('Profile photos must be 10 MB or smaller.'); return; }
+    setProfilePhotoBusy(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = \`avatars/\${user.uid}/\${Date.now()}_\${safeName}\`;
+      const { error: uploadError } = await supabase.storage.from('up2-media').upload(path, file, { contentType: file.type, upsert: false });
+      if (uploadError) throw uploadError;
+      const photoURL = supabase.storage.from('up2-media').getPublicUrl(path).data.publicUrl;
+      await updateDoc(doc(db, 'users', user.uid), { photoURL, updatedAt: serverTimestamp() });
+      await setDoc(doc(db, 'directory', user.uid), { photoURL, updatedAt: serverTimestamp() }, { merge: true });
+      await updateProfile(user, { photoURL });
+      setToast('Profile photo updated.');
+    } catch (err) { setToast(authError(err)); }
+    finally { setProfilePhotoBusy(false); setTimeout(() => setToast(''), 3000); }
+  }
+
   async function saveProfile(e: FormEvent) {
     e.preventDefault();
     if (!user || !profile || profilePageUid !== user.uid) return;
@@ -695,7 +715,7 @@ export default function App() {
             return <>
               <div className="profile-page-top"><button className="text-button" onClick={() => setTab('people')}>← Back to people</button><span className="eyebrow">YOUR UP2 PROFILE</span></div>
               <article className="profile-header card">
-                <Avatar name={displayedProfile?.displayName || 'UP2 member'} photo={displayedProfile?.photoURL} size="large" />
+                {isOwnProfile ? <label className="profile-avatar-upload" title="Change profile photo"><Avatar name={displayedProfile?.displayName || 'UP2 member'} photo={displayedProfile?.photoURL} size="large" /><span>{profilePhotoBusy ? 'Uploading…' : 'Change photo'}</span><input type="file" accept="image/*" disabled={profilePhotoBusy} onChange={e => { void uploadProfilePhoto(e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} /></label> : <Avatar name={displayedProfile?.displayName || 'UP2 member'} photo={displayedProfile?.photoURL} size="large" />}
                 <div className="profile-header-main"><h1>{displayedProfile?.displayName || 'UP2 member'}</h1>
                   <div className="profile-stats"><span><strong>{isOwnProfile || profilePageUnlocked ? profilePagePosts.length : '—'}</strong> posts</span><span><strong>{isOwnProfile || profilePageUnlocked ? profileFollowers.length : '—'}</strong> followers</span><span><strong>{isOwnProfile || profilePageUnlocked ? profileFollowing.length : '—'}</strong> following</span></div>
                   {isOwnProfile ? <p className="profile-bio">{profile?.bio || 'Add a little bio so your people know it’s you.'}</p> : profilePageUnlocked ? <p className="profile-bio">{profileDetails?.bio || 'No bio yet.'}</p> : <p className="profile-bio private-copy">🔒 This account is private. Bio and posts are visible only after your follow request is accepted.</p>}
